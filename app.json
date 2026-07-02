@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "FoodPicker 판매자",
+    "slug": "foodpicker-seller",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "splash": { "resizeMode": "contain", "backgroundColor": "#22A06B" },
+    "ios": { "supportsTablet": false, "bundleIdentifier": "com.foodpicker.seller" },
+    "android": { "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#22A06B" }, "package": "com.foodpicker.seller" },
+    "plugins": ["expo-image-picker"]
+  }
+}
