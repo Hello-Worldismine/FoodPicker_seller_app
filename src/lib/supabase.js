@@ -5,8 +5,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+// 값에 섞인 공백/개행/끝 슬래시는 iOS(NSURLSession)의 엄격한 URL 파서에서
+// "Invalid path specified in request URL" 를 유발하므로 방어적으로 정리한다.
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim().replace(/\/+$/, '');
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   // .env 미설정 시 조기에 명확히 경고 (원인 파악 어려운 런타임 오류 방지)
