@@ -11,12 +11,15 @@ import {
   Platform,
   Alert,
   Switch,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../store/appStore';
+import { useAuth } from '../store/authStore';
+import { uploadImageIfLocal } from '../lib/storage';
 import DaumPostcodeModal from '../components/DaumPostcodeModal';
 import {
   ChevronRight,
@@ -110,6 +113,7 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
   const [accountNumber, setAccountNumber] = useState(storeInfo.accountNumber);
   const [accountHolder, setAccountHolder] = useState(storeInfo.accountHolder);
   const [changeReason, setChangeReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const originalBiz = storeInfo.bizNumber;
   const bizChanged = bizNumber !== originalBiz;
@@ -134,24 +138,37 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     setShowBizUpload(formatted !== originalBiz);
   }
 
-  // TODO: PATCH /api/seller/store { name, bizNumber, residentNumber, address, bankName, accountNumber, accountHolder, changeReason }
-  // TODO: bizCertFile은 FormData로 S3 등 스토리지에 먼저 업로드 후 URL로 전달
-  function handleSubmit() {
-    if (!canSubmit) return;
-    setStoreInfo(prev => ({
-      ...prev,
-      name,
-      bizNumber,
-      residentNumber: `${residentFront}-${residentBack}`,
-      address,
-      bankName,
-      accountNumber,
-      accountHolder,
-      approvalStatus: 'pending',
-    }));
-    Alert.alert('신청 완료', '변경 신청이 접수되었습니다.\n관리자 검토 후 승인됩니다.', [
-      { text: '확인', onPress: onClose },
-    ]);
+  // 변경 신청: 허용 컬럼은 setStoreInfo가 storeToDb→updateStoreRow로 DB 영속.
+  // 사업자등록증 이미지는 Storage 업로드 후 URL만 저장. approval_status는 판매자 쓰기 잠금이라
+  // storeToDb가 자동 제외 → 로컬 '심사중' 표시만 되고 실제 pending 전환은 서버 승인 워크플로(§9) 담당.
+  async function handleSubmit() {
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
+    try {
+      let bizCertImage = storeInfo.bizCertImage;
+      if (bizChanged && bizCertFile) {
+        bizCertImage = await uploadImageIfLocal(bizCertFile, null, 'documents');
+      }
+      setStoreInfo(prev => ({
+        ...prev,
+        name,
+        bizNumber,
+        residentNumber: `${residentFront}-${residentBack}`,
+        address,
+        bankName,
+        accountNumber,
+        accountHolder,
+        bizCertImage,
+        approvalStatus: 'pending', // 낙관적 UI(로컬). DB에는 컬럼 잠금으로 반영되지 않음.
+      }));
+      Alert.alert('신청 완료', '변경 신청이 접수되었습니다.\n관리자 검토 후 승인됩니다.', [
+        { text: '확인', onPress: onClose },
+      ]);
+    } catch (e) {
+      Alert.alert('오류', e.message || '제출 중 오류가 발생했습니다.');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function handleClose() {
@@ -349,15 +366,15 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
           >
             <TouchableOpacity
               className="rounded-xl py-4 items-center"
-              style={{ backgroundColor: canSubmit ? '#22A06B' : '#E5E7EB' }}
+              style={{ backgroundColor: canSubmit && !submitting ? '#22A06B' : '#E5E7EB' }}
               onPress={handleSubmit}
-              disabled={!canSubmit}
+              disabled={!canSubmit || submitting}
             >
               <Text
                 className="font-bold text-[15px]"
-                style={{ color: canSubmit ? '#fff' : '#9AA3AF' }}
+                style={{ color: canSubmit && !submitting ? '#fff' : '#9AA3AF' }}
               >
-                변경 신청하기
+                {submitting ? '제출 중…' : '변경 신청하기'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -751,6 +768,7 @@ export default function StoreScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { storeInfo, setStoreInfo, products } = useApp();
+  const { signOut } = useAuth();
 
   const [showAdminEdit, setShowAdminEdit] = useState(false);
   const [showUserEdit, setShowUserEdit] = useState(false);
@@ -759,6 +777,8 @@ export default function StoreScreen() {
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [showCustomerCenter, setShowCustomerCenter] = useState(false);
+  const [bizUploading, setBizUploading] = useState(false);
 
   const approvalCfg = APPROVAL_CONFIG[storeInfo.approvalStatus] || APPROVAL_CONFIG.pending;
 
@@ -783,8 +803,17 @@ export default function StoreScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.8,
     });
-    if (!result.canceled) {
+    if (result.canceled || !result.assets?.[0]) return;
+    setBizUploading(true);
+    try {
+      // Storage 업로드 후 public URL을 stores.biz_cert_image에 영속(setStoreInfo→updateStoreRow).
+      const url = await uploadImageIfLocal(result.assets[0].uri, null, 'documents');
+      setStoreInfo(prev => ({ ...prev, bizCertImage: url }));
       Alert.alert('업로드 완료', '사업자등록증이 재업로드되었습니다.');
+    } catch (e) {
+      Alert.alert('업로드 실패', e.message || '이미지 업로드에 실패했습니다.');
+    } finally {
+      setBizUploading(false);
     }
   }
 
@@ -984,14 +1013,20 @@ export default function StoreScreen() {
               <FileText color="#22A06B" size={18} />
               <View>
                 <Text className="text-charcoal text-[15px] font-semibold">사업자등록증</Text>
-                <Text className="text-primary text-[13px] mt-0.5">등록 완료</Text>
+                <Text
+                  className="text-[13px] mt-0.5"
+                  style={{ color: storeInfo.bizCertImage ? '#22A06B' : '#9AA3AF' }}
+                >
+                  {storeInfo.bizCertImage ? '등록 완료' : '미등록'}
+                </Text>
               </View>
             </View>
             <TouchableOpacity
               onPress={uploadBizCert}
+              disabled={bizUploading}
               className="bg-softgray border border-gray-200 rounded-lg px-3 py-1.5"
             >
-              <Text className="text-gray-600 text-xs font-semibold">재업로드</Text>
+              <Text className="text-gray-600 text-xs font-semibold">{bizUploading ? '업로드 중…' : '재업로드'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1001,14 +1036,20 @@ export default function StoreScreen() {
           <View className="px-4 py-3 border-b border-gray-100">
             <Text className="font-bold text-charcoal text-[16px]">설정</Text>
           </View>
-          <TouchableOpacity className="flex-row items-center justify-between px-4 py-3.5 border-b border-gray-50">
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5 border-b border-gray-50"
+            onPress={() => Linking.openSettings()}
+          >
             <View className="flex-row items-center gap-3">
               <Bell color="#9AA3AF" size={18} />
               <Text className="text-charcoal text-[16px]">알림 설정</Text>
             </View>
             <ChevronRight color="#9AA3AF" size={18} />
           </TouchableOpacity>
-          <TouchableOpacity className="flex-row items-center justify-between px-4 py-3.5">
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5"
+            onPress={() => setShowCustomerCenter(true)}
+          >
             <View className="flex-row items-center gap-3">
               <HelpCircle color="#9AA3AF" size={18} />
               <Text className="text-charcoal text-[16px]">고객센터</Text>
@@ -1094,11 +1135,41 @@ export default function StoreScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 className="flex-1 bg-alertred rounded-xl py-3 items-center"
-                onPress={() => { setShowLogoutConfirm(false); Alert.alert('로그아웃', '로그아웃되었습니다.'); }}
+                onPress={() => { setShowLogoutConfirm(false); signOut(); }}
               >
                 <Text className="text-white font-semibold">로그아웃</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 고객센터 */}
+      <Modal visible={showCustomerCenter} transparent animationType="fade" onRequestClose={() => setShowCustomerCenter(false)}>
+        <View className="flex-1 bg-black/50 items-center justify-center px-6">
+          <View className="bg-white rounded-2xl p-6 w-full">
+            <Text className="text-lg font-bold text-charcoal mb-1 text-center">고객센터</Text>
+            <Text className="text-gray-500 text-xs text-center mb-5">평일 09:00 ~ 18:00 (주말·공휴일 휴무)</Text>
+            <TouchableOpacity
+              className="flex-row items-center justify-center gap-2 bg-mint rounded-xl py-3.5 mb-2.5"
+              onPress={() => Linking.openURL('tel:0212345678')}
+            >
+              <Phone color="#22A06B" size={16} />
+              <Text className="text-primary font-semibold text-[15px]">전화 문의 · 02-1234-5678</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              className="flex-row items-center justify-center gap-2 bg-softgray rounded-xl py-3.5 mb-4"
+              onPress={() => Linking.openURL('mailto:help@foodpicker.co.kr')}
+            >
+              <MessageSquare color="#374151" size={16} />
+              <Text className="text-gray-700 font-semibold text-[15px]">이메일 문의</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              className="border border-gray-200 rounded-xl py-3 items-center"
+              onPress={() => setShowCustomerCenter(false)}
+            >
+              <Text className="text-gray-600 font-semibold">닫기</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1108,6 +1179,7 @@ export default function StoreScreen() {
         onClose={() => setShowPreview(false)}
         storeInfo={storeInfo}
         products={products}
+        navigation={navigation}
       />
 
       <TermsModal
@@ -1229,11 +1301,25 @@ export default function StoreScreen() {
 }
 
 // ─── Store Preview Modal ────────────────────────────────────────
-function StorePreviewModal({ visible, onClose, storeInfo, products }) {
+function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }) {
   const insets = useSafeAreaInsets();
   const [previewTab, setPreviewTab] = useState('products');
 
   const sellingProducts = (products || []).filter(p => p.status === 'selling');
+
+  // 미리보기(소비자 화면 시뮬레이션)의 액션도 실제 매장 정보로 동작.
+  function openDirections() {
+    const q = storeInfo.address || storeInfo.name || '';
+    Linking.openURL('https://maps.google.com/?q=' + encodeURIComponent(q));
+  }
+  function callStore() {
+    const tel = (storeInfo.phone || '').replace(/[^0-9]/g, '');
+    if (tel) Linking.openURL('tel:' + tel);
+  }
+  function goReviews() {
+    onClose();
+    navigation?.navigate('Reviews');
+  }
 
   function fmtTime(iso) {
     const d = new Date(iso);
@@ -1285,10 +1371,12 @@ function StorePreviewModal({ visible, onClose, storeInfo, products }) {
                   <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{storeInfo.rating}</Text>
                   <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}> ({storeInfo.reviewCount})</Text>
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-                  <MapPin size={12} color="rgba(255,255,255,0.75)" />
-                  <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13 }}>280m</Text>
-                </View>
+                {!!storeInfo.category && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                    <Tag size={12} color="rgba(255,255,255,0.75)" />
+                    <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13 }}>{storeInfo.category}</Text>
+                  </View>
+                )}
               </View>
             </View>
           </View>
@@ -1297,15 +1385,15 @@ function StorePreviewModal({ visible, onClose, storeInfo, products }) {
         <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
           {/* Action buttons */}
           <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 16, gap: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
-            <TouchableOpacity activeOpacity={0.8} style={{ flex: 1, backgroundColor: '#E9F8F1', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
+            <TouchableOpacity activeOpacity={0.8} onPress={openDirections} style={{ flex: 1, backgroundColor: '#E9F8F1', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
               <Navigation color="#22A06B" size={20} />
               <Text style={{ color: '#22A06B', fontSize: 12, fontWeight: '700' }}>길찾기</Text>
             </TouchableOpacity>
-            <TouchableOpacity activeOpacity={0.8} style={{ flex: 1, backgroundColor: '#F5F6F7', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
+            <TouchableOpacity activeOpacity={0.8} onPress={callStore} style={{ flex: 1, backgroundColor: '#F5F6F7', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
               <Phone color="#374151" size={20} />
               <Text style={{ color: '#374151', fontSize: 12, fontWeight: '600' }}>전화</Text>
             </TouchableOpacity>
-            <TouchableOpacity activeOpacity={0.8} style={{ flex: 1, backgroundColor: '#F5F6F7', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
+            <TouchableOpacity activeOpacity={0.8} onPress={goReviews} style={{ flex: 1, backgroundColor: '#F5F6F7', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
               <MessageSquare color="#374151" size={20} />
               <Text style={{ color: '#374151', fontSize: 12, fontWeight: '600' }}>리뷰</Text>
             </TouchableOpacity>
@@ -1454,7 +1542,7 @@ function PreviewProductCard({ product, storeInfo }) {
       {/* Info */}
       <View style={{ padding: 14 }}>
         <Text style={{ fontSize: 16, fontWeight: '700', color: '#1F2933', marginBottom: 3 }}>{product.name}</Text>
-        <Text style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 8 }}>{storeInfo.name} · 280m</Text>
+        <Text style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 8 }}>{storeInfo.name}</Text>
         <Text style={{ fontSize: 13, color: '#9CA3AF', textDecorationLine: 'line-through', marginBottom: 2 }}>
           {product.originalPrice.toLocaleString()}원
         </Text>

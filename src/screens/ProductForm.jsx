@@ -260,8 +260,8 @@ export default function ProductFormScreen() {
     if (!noAllergen) setAllergens([]);
   }
 
-  // TODO: productId 있으면 PUT /api/seller/products/:productId, 없으면 POST /api/seller/products
-  // TODO: 이미지(images)는 FormData로 S3 등 스토리지에 먼저 업로드 후 URL 배열로 전달
+  // 등록/수정: addProduct/updateProduct → api(insertProduct/updateProductData) → Supabase.
+  // 이미지는 api 계층의 uploadImages가 로컬 URI를 Storage에 업로드 후 public URL로 치환한다.
   function validateAndSubmit() {
     if (!name.trim()) { Alert.alert('오류', '상품명을 입력해주세요.'); return; }
     if (!category) { Alert.alert('오류', '카테고리를 선택해주세요.'); return; }
@@ -283,7 +283,12 @@ export default function ProductFormScreen() {
     const psDate = new Date(); psDate.setHours(psh, psm, 0, 0);
     const peDate = new Date(); peDate.setHours(peh, pem, 0, 0);
 
-    const allergyInfo = noAllergen ? '해당 없음' : allergens.join(', ') + (allergens.length > 0 ? ' 함유' : '');
+    // 프리셋 목록 외 '기타 알레르기 직접 입력' 값도 병합(중복 제외).
+    const extraAllergen = otherAllergen.trim();
+    const mergedAllergens = noAllergen
+      ? []
+      : [...allergens, ...(extraAllergen && !allergens.includes(extraAllergen) ? [extraAllergen] : [])];
+    const allergyInfo = noAllergen ? '해당 없음' : mergedAllergens.join(', ') + (mergedAllergens.length > 0 ? ' 함유' : '');
 
     const productData = {
       name: name.trim(),
@@ -300,14 +305,13 @@ export default function ProductFormScreen() {
       intervalMinutes,
       stock: parseInt(stock),
       expiryDate: expDate.toISOString(),
-      storage: storage + ' 보관',
-      storageMethod: storage + ' 보관',
+      storage,
       storageDetail: storageDetail.trim(),
       pickupStart: psDate.toISOString(),
       pickupEnd: peDate.toISOString(),
       description: description.trim(),
       composition: composition.trim(),
-      allergens: noAllergen ? [] : allergens,
+      allergens: mergedAllergens,
       allergyInfo,
       storeNotice: storeNotice.trim(),
       cancelPolicy: cancelPolicy.trim(),

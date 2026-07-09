@@ -47,28 +47,13 @@ function isExpired(isoDate) {
 export default function ProductsScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { storeInfo, products, updateProductStock, updateProductStatus, deleteProduct, expireProduct } = useApp();
+  const { storeInfo, products, updateProductStock, updateProductStatus, deleteProduct } = useApp();
 
   const [activeTab, setActiveTab] = useState('all');
   const [actionModal, setActionModal] = useState(null);
   const [menuProduct, setMenuProduct] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, right: 16 });
-  const [tick, setTick] = useState(0);
-  const productsRef = useRef(products);
-  productsRef.current = products;
-
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    productsRef.current.forEach(p => {
-      if (p.status === 'selling' && isExpired(p.expiryDate)) {
-        expireProduct(p.id);
-      }
-    });
-  }, [tick]);
+  // 소비기한 만료·자동 가격인하는 서버 스케줄러(pg_cron)가 처리 → 클라이언트 tick 제거.
 
   const filtered = activeTab === 'all'
     ? products
@@ -114,10 +99,7 @@ export default function ProductsScreen() {
 
   function confirmAction() {
     if (!actionModal) return;
-    const { product, action } = actionModal;
-    if (action === 'paused') updateProductStatus(product.id, 'paused');
-    if (action === 'selling') updateProductStatus(product.id, 'selling');
-    if (action === 'hidden') updateProductStatus(product.id, 'hidden');
+    updateProductStatus(actionModal.product.id, actionModal.action);
     setActionModal(null);
   }
 
@@ -245,11 +227,17 @@ export default function ProductsScreen() {
                       const progressPct = Math.min(1, Math.max(0,
                         (product.startPrice - product.salePrice) / (product.startPrice - product.floorPrice)
                       ));
-                      const cycleSeconds = (product.intervalMinutes || 30) * 60;
-                      const elapsed = Math.floor(Date.now() / 1000) % cycleSeconds;
-                      const remaining = cycleSeconds - elapsed;
-                      const hours = Math.floor(remaining / 3600);
-                      const mins = Math.floor((remaining % 3600) / 60);
+                      const atFloor = product.salePrice <= product.floorPrice;
+                      // 다음 자동 인하 예정 시각 = (마지막 인하 or 등록 시각) + 인하 간격 — 서버 pg_cron 기준.
+                      const baseMs = new Date(product.lastReducedAt || product.createdAt).getTime();
+                      const remainMin = Math.max(0, Math.round((baseMs + (product.intervalMinutes || 30) * 60000 - Date.now()) / 60000));
+                      const hours = Math.floor(remainMin / 60);
+                      const mins = remainMin % 60;
+                      const nextLabel = atFloor
+                        ? '최저가 도달'
+                        : remainMin <= 0
+                          ? '곧 인하'
+                          : `다음 인하까지 ${hours > 0 ? `${hours}시간 ` : ''}${mins}분`;
                       return (
                         <View style={{ marginBottom: 10 }}>
                           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -257,7 +245,7 @@ export default function ProductsScreen() {
                               가격 인하 진행 중 ({product.salePrice.toLocaleString()}원)
                             </Text>
                             <Text style={{ fontSize: 11, color: '#22A06B', fontWeight: '600' }}>
-                              다음 인하까지 {hours > 0 ? `${hours}시간 ` : ''}{mins}분
+                              {nextLabel}
                             </Text>
                           </View>
                           <View style={{ height: 4, backgroundColor: '#E9F8F1', borderRadius: 2 }}>
@@ -435,12 +423,10 @@ export default function ProductsScreen() {
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 20, padding: 24, width: '100%' }}>
             <Text style={{ fontSize: 18, fontWeight: '700', color: '#1F2933', marginBottom: 8, textAlign: 'center' }}>
-              {actionModal?.action === 'paused' && '판매 중지'}
-              {actionModal?.action === 'hidden' && '상품 숨김'}
+              판매 중지
             </Text>
             <Text style={{ color: '#6B7280', fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 22 }}>
-              {actionModal?.action === 'paused' && `"${actionModal?.product?.name}" 상품의\n판매를 중지하시겠습니까?`}
-              {actionModal?.action === 'hidden' && `"${actionModal?.product?.name}" 상품을\n숨기시겠습니까?`}
+              {`"${actionModal?.product?.name}" 상품의\n판매를 중지하시겠습니까?`}
             </Text>
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <TouchableOpacity

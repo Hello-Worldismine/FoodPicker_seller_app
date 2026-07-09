@@ -3,11 +3,12 @@ import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { ChevronLeft, ChevronRight } from 'lucide-react-native';
-import { notices } from '../store/appStore';
+import { useApp } from '../store/appStore';
 
 export default function NoticeListScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const { notices } = useApp();
 
   const sorted = [...notices].sort((a, b) => b.date.localeCompare(a.date));
 

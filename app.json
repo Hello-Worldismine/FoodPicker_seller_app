@@ -2,6 +2,7 @@
   "expo": {
     "name": "FoodPicker 판매자",
     "slug": "foodpicker-seller",
+    "scheme": "foodpicker-seller",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

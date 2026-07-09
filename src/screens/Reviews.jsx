@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { useApp } from '../store/appStore';
+import { useApp, formatReviewDate } from '../store/appStore';
 import {
   ChevronLeft,
   Star,
@@ -136,7 +136,7 @@ export default function ReviewsScreen() {
                     </View>
                     <View>
                       <Text className="font-semibold text-charcoal text-sm">{review.user}</Text>
-                      <Text className="text-gray-400 text-xs">{review.date}</Text>
+                      <Text className="text-gray-400 text-xs">{formatReviewDate(review.createdAt)}</Text>
                     </View>
                   </View>
                   <StarRow rating={review.rating} />

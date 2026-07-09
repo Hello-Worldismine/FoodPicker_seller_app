@@ -3,13 +3,14 @@ import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { ChevronLeft } from 'lucide-react-native';
-import { notices } from '../store/appStore';
+import { useApp } from '../store/appStore';
 
 export default function NoticeDetailScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const insets = useSafeAreaInsets();
   const { noticeId } = route.params || {};
+  const { notices } = useApp();
 
   const notice = notices.find(n => n.id === noticeId);
 

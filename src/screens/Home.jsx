@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { useApp, ORDER_SELLER_STATUS, notices } from '../store/appStore';
+import { useApp, ORDER_SELLER_STATUS, formatRelativeTime } from '../store/appStore';
 import { Plus, ClipboardList, AlertTriangle, Bell, X, Leaf, Package, TrendingUp } from 'lucide-react-native';
 
 function formatTime(isoString) {
@@ -30,7 +30,7 @@ const NOTIF_TYPE_COLOR = {
 export default function HomeScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { storeInfo, products, orders, pauseSale, resumeSale, confirmOrder, completePickup, notifications, markNotificationRead, markAllNotificationsRead } = useApp();
+  const { storeInfo, products, orders, pauseSale, resumeSale, confirmOrder, completePickup, notifications, markNotificationRead, markAllNotificationsRead, deleteNotification, notices } = useApp();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showNotifModal, setShowNotifModal] = useState(false);
   const [bannerIdx, setBannerIdx] = useState(0);
@@ -62,11 +62,12 @@ export default function HomeScreen() {
   // 롤링 배너 - 화면 포커스 기준으로 관리
   useFocusEffect(
     useCallback(() => {
+      if (notices.length === 0) return undefined;
       const interval = setInterval(() => {
         setBannerIdx(i => (i + 1) % notices.length);
       }, 4000);
       return () => clearInterval(interval);
-    }, [])
+    }, [notices.length])
   );
 
   function handleToggle() {
@@ -134,20 +135,22 @@ export default function HomeScreen() {
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
         {/* 롤링 배너 */}
+        {notices.length > 0 && (
         <TouchableOpacity
           activeOpacity={0.85}
-          onPress={() => navigation.navigate('NoticeDetail', { noticeId: notices[bannerIdx].id })}
+          onPress={() => navigation.navigate('NoticeDetail', { noticeId: notices[bannerIdx % notices.length].id })}
           style={{ backgroundColor: '#1F2933', paddingHorizontal: 16, paddingVertical: 10 }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Text numberOfLines={1} style={{ flex: 1, color: '#E5E7EB', fontSize: 13 }}>
-              {notices[bannerIdx].emoji} {notices[bannerIdx].title}
+              {notices[bannerIdx % notices.length].emoji} {notices[bannerIdx % notices.length].title}
             </Text>
             <Text style={{ color: '#6B7280', fontSize: 11, marginLeft: 8 }}>
-              {bannerIdx + 1}/{notices.length}
+              {(bannerIdx % notices.length) + 1}/{notices.length}
             </Text>
           </View>
         </TouchableOpacity>
+        )}
 
         {/* Stats Card */}
         <View style={{ marginHorizontal: 16, marginTop: 16, marginBottom: 12, backgroundColor: '#fff', borderRadius: 16, padding: 16, elevation: 1 }}>
@@ -377,13 +380,22 @@ export default function HomeScreen() {
                     <View style={{ flex: 1 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
                         <Text style={{ fontSize: 13, fontWeight: '700', color: typeStyle.color }}>{notif.title}</Text>
-                        <Text style={{ fontSize: 11, color: '#9CA3AF' }}>{notif.time}</Text>
+                        <Text style={{ fontSize: 11, color: '#9CA3AF' }}>{formatRelativeTime(notif.createdAt)}</Text>
                       </View>
                       <Text style={{ fontSize: 13, color: '#374151', lineHeight: 19 }}>{notif.message}</Text>
                     </View>
-                    {!notif.read && (
-                      <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#E5484D', marginTop: 6 }} />
-                    )}
+                    <View style={{ alignItems: 'center', gap: 8, marginTop: 2 }}>
+                      {!notif.read && (
+                        <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#E5484D' }} />
+                      )}
+                      <TouchableOpacity
+                        onPress={() => deleteNotification(notif.id)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        style={{ padding: 2 }}
+                      >
+                        <X color="#C4C9D0" size={16} />
+                      </TouchableOpacity>
+                    </View>
                   </TouchableOpacity>
                 );
               })

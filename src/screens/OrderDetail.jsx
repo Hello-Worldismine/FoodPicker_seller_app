@@ -1,13 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
+  TextInput,
+  Modal,
+  Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { useApp, ORDER_SELLER_STATUS } from '../store/appStore';
+import { useApp, ORDER_SELLER_STATUS, PAYMENT_STATUS, formatPickupWindow } from '../store/appStore';
 import {
   ChevronLeft,
   Package,
@@ -43,10 +46,13 @@ export default function OrderDetailScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const insets = useSafeAreaInsets();
-  const { orders, confirmOrder, completePickup, cancelOrder } = useApp();
+  const { orders, products, confirmOrder, completePickup, cancelOrder } = useApp();
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
 
   const { orderId } = route.params || {};
   const order = orders.find(o => o.id === orderId);
+  const product = order ? products.find(p => p.id === order.productId) : null;
 
   if (!order) {
     return (
@@ -121,8 +127,12 @@ export default function OrderDetailScreen() {
             <Text className="font-bold text-charcoal text-[15px]">상품 정보</Text>
           </View>
           <View className="flex-row items-center gap-3">
-            <View className="w-14 h-14 bg-softgray rounded-xl items-center justify-center">
-              <Text className="text-3xl">🛍️</Text>
+            <View className="w-14 h-14 bg-softgray rounded-xl items-center justify-center overflow-hidden">
+              {product?.thumbnail ? (
+                <Image source={{ uri: product.thumbnail }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+              ) : (
+                <Text className="text-3xl">{product?.emoji || '🛍️'}</Text>
+              )}
             </View>
             <View className="flex-1">
               <Text className="font-bold text-charcoal text-[15px]">{order.productName}</Text>
@@ -156,11 +166,11 @@ export default function OrderDetailScreen() {
           </View>
           <View className="flex-row justify-between mb-2">
             <Text className="text-gray-500 text-sm">픽업 시간</Text>
-            <Text className="text-charcoal text-sm font-semibold">{order.pickupTime}</Text>
+            <Text className="text-charcoal text-sm font-semibold">{formatPickupWindow(order.pickupStart, order.pickupEnd)}</Text>
           </View>
           <View className="flex-row justify-between">
             <Text className="text-gray-500 text-sm">결제 상태</Text>
-            <Text className="text-primary text-sm font-semibold">{order.paymentStatus}</Text>
+            <Text className="text-primary text-sm font-semibold">{PAYMENT_STATUS[order.paymentStatus]?.label || order.paymentStatus}</Text>
           </View>
         </View>
 
@@ -175,7 +185,7 @@ export default function OrderDetailScreen() {
             <Text className="text-charcoal text-sm">{formatPrice(order.amount)}</Text>
           </View>
           <View className="flex-row justify-between mb-2">
-            <Text className="text-gray-500 text-sm">수수료 (10%)</Text>
+            <Text className="text-gray-500 text-sm">수수료 ({order.amount > 0 ? Math.round((order.fee / order.amount) * 100) : 0}%)</Text>
             <Text className="text-alertred text-sm">-{formatPrice(order.fee)}</Text>
           </View>
           <View className="h-px bg-gray-100 my-2" />
@@ -215,7 +225,7 @@ export default function OrderDetailScreen() {
             <View className="flex-row gap-3">
               <TouchableOpacity
                 className="flex-1 border border-alertred rounded-xl py-3.5 items-center"
-                onPress={() => { cancelOrder(order.id); navigation.goBack(); }}
+                onPress={() => { setCancelReason(''); setShowCancelModal(true); }}
               >
                 <Text className="text-alertred font-semibold">주문 취소</Text>
               </TouchableOpacity>
@@ -238,6 +248,49 @@ export default function OrderDetailScreen() {
           )}
         </View>
       )}
+
+      {/* 주문 취소 사유 입력 모달 */}
+      <Modal visible={showCancelModal} transparent animationType="fade" onRequestClose={() => setShowCancelModal(false)}>
+        <View className="flex-1 bg-black/50 items-center justify-center px-6">
+          <View className="bg-white rounded-2xl p-6 w-full">
+            <Text className="text-lg font-bold text-charcoal mb-1 text-center">주문 취소</Text>
+            <Text className="text-gray-500 text-sm text-center leading-5 mb-4">
+              취소 사유를 입력해주세요.{'\n'}구매자에게 전달됩니다.
+            </Text>
+            <TextInput
+              className="bg-softgray rounded-xl px-4 py-3 text-charcoal mb-5"
+              value={cancelReason}
+              onChangeText={setCancelReason}
+              placeholder="예: 재고 소진으로 준비가 어렵습니다."
+              placeholderTextColor="#9AA3AF"
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+              style={{ minHeight: 76 }}
+            />
+            <View className="flex-row gap-3">
+              <TouchableOpacity
+                className="flex-1 border border-gray-200 rounded-xl py-3 items-center"
+                onPress={() => setShowCancelModal(false)}
+              >
+                <Text className="text-gray-600 font-semibold">닫기</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                className="flex-1 rounded-xl py-3 items-center"
+                style={{ backgroundColor: cancelReason.trim() ? '#E5484D' : '#F0B4B6' }}
+                disabled={!cancelReason.trim()}
+                onPress={() => {
+                  setShowCancelModal(false);
+                  cancelOrder(order.id, cancelReason);
+                  navigation.goBack();
+                }}
+              >
+                <Text className="text-white font-semibold">취소 처리</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

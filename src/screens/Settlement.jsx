@@ -5,19 +5,17 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
-  Platform,
   Dimensions,
 } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useApp } from '../store/appStore';
+import { useApp, SETTLEMENT_STATUS } from '../store/appStore';
 import { TrendingUp, AlertTriangle, ChevronDown, Info, Calendar } from 'lucide-react-native';
 
 const STATUS_FILTERS = [
-  { key: 'all',    label: '전체' },
-  { key: '정산완료', label: '정산완료' },
-  { key: '정산예정', label: '정산예정' },
-  { key: '보류',   label: '보류' },
+  { key: 'all',       label: '전체' },
+  { key: 'completed', label: SETTLEMENT_STATUS.completed.label },
+  { key: 'scheduled', label: SETTLEMENT_STATUS.scheduled.label },
+  { key: 'on_hold',   label: SETTLEMENT_STATUS.on_hold.label },
 ];
 
 function formatPrice(n) {
@@ -25,10 +23,8 @@ function formatPrice(n) {
 }
 
 function getStatusStyle(status) {
-  if (status === '정산완료') return { color: '#22A06B', bg: '#E9F8F1' };
-  if (status === '정산예정') return { color: '#FF8A3D', bg: '#FFF4ED' };
-  if (status === '보류')    return { color: '#E5484D', bg: '#FFF0F0' };
-  return { color: '#9AA3AF', bg: '#F5F6F7' };
+  const cfg = SETTLEMENT_STATUS[status];
+  return cfg ? { color: cfg.color, bg: cfg.bg } : { color: '#9AA3AF', bg: '#F5F6F7' };
 }
 
 // 이번 주 월~일 범위 반환 (weeksAgo=0: 이번 주, 1: 지난 주)
@@ -92,13 +88,6 @@ export default function SettlementScreen() {
   const [showWeekPicker, setShowWeekPicker] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
 
-  // iOS 날짜 직접 선택 (커스텀 기간일 때)
-  const [showPicker, setShowPicker] = useState(false);
-  const [pickerTarget, setPickerTarget] = useState(null);
-  const [pickerValue, setPickerValue] = useState(new Date());
-  const [customStart, setCustomStart] = useState(getWeekBounds(1)[0]);
-  const [customEnd, setCustomEnd] = useState(getWeekBounds(1)[1]);
-
   const selectedStatusLabel = STATUS_FILTERS.find(f => f.key === statusFilter)?.label || '전체';
   const nextWed = getNextWednesday();
   const accountLocked = isWithin3DaysOfSettlement();
@@ -122,12 +111,12 @@ export default function SettlementScreen() {
   });
 
   const totalSales   = filtered.reduce((s, x) => s + x.amount, 0);
-  const totalPlatformFee = filtered.reduce((s, x) => s + (x.platformFee || Math.round(x.fee * 0.8)), 0);
-  const totalPgFee   = filtered.reduce((s, x) => s + (x.pgFee || Math.round(x.fee * 0.2)), 0);
+  const totalPlatformFee = filtered.reduce((s, x) => s + (x.platformFee || 0), 0);
+  const totalPgFee   = filtered.reduce((s, x) => s + (x.pgFee || 0), 0);
   const totalFee     = totalPlatformFee + totalPgFee;
   const totalRefund  = filtered.reduce((s, x) => s + (x.refund || 0), 0);
   const totalNet     = filtered.reduce((s, x) => s + x.settlement, 0);
-  const holdCount    = filtered.filter(x => x.status === '보류').length;
+  const holdCount    = filtered.filter(x => x.status === 'on_hold').length;
 
   function openStatusDropdown(evt) {
     const { pageY } = evt.nativeEvent;
@@ -136,15 +125,6 @@ export default function SettlementScreen() {
     const top = pageY + 10 + dropdownHeight > screenHeight ? pageY - dropdownHeight - 6 : pageY + 10;
     setStatusDropdownPos({ top, right: 16 });
     setShowStatusDropdown(true);
-  }
-
-  function onPickerChange(event, date) {
-    if (Platform.OS === 'android') setShowPicker(false);
-    if (date) {
-      setPickerValue(date);
-      if (pickerTarget === 'start') setCustomStart(date);
-      else setCustomEnd(date);
-    }
   }
 
   const weekOptions = getWeekOptions();
@@ -293,37 +273,6 @@ export default function SettlementScreen() {
           </TouchableOpacity>
         )}
 
-        {/* iOS Date Picker Modal */}
-        {showPicker && Platform.OS === 'ios' && (
-          <Modal visible transparent animationType="slide">
-            <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' }}>
-              <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20 }}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
-                  <TouchableOpacity onPress={() => setShowPicker(false)}>
-                    <Text style={{ color: '#9AA3AF', fontSize: 15 }}>취소</Text>
-                  </TouchableOpacity>
-                  <Text style={{ fontWeight: '700', fontSize: 15, color: '#1F2933' }}>날짜 선택</Text>
-                  <TouchableOpacity onPress={() => setShowPicker(false)}>
-                    <Text style={{ color: '#22A06B', fontWeight: '600', fontSize: 15 }}>확인</Text>
-                  </TouchableOpacity>
-                </View>
-                <DateTimePicker
-                  value={pickerValue}
-                  mode="date"
-                  display="spinner"
-                  onChange={onPickerChange}
-                  maximumDate={new Date()}
-                  locale="ko-KR"
-                />
-              </View>
-            </View>
-          </Modal>
-        )}
-
-        {showPicker && Platform.OS === 'android' && (
-          <DateTimePicker value={pickerValue} mode="date" display="default" onChange={onPickerChange} maximumDate={new Date()} />
-        )}
-
         {/* Settlement List */}
         <View style={{ paddingHorizontal: 16 }}>
           {filtered.length === 0 ? (
@@ -336,14 +285,14 @@ export default function SettlementScreen() {
           ) : (
             filtered.map(item => {
               const style = getStatusStyle(item.status);
-              const pFee = item.platformFee || Math.round(item.fee * 0.8);
-              const gFee = item.pgFee || Math.round(item.fee * 0.2);
+              const pFee = item.platformFee || 0;
+              const gFee = item.pgFee || 0;
               return (
                 <View key={item.id} style={{ backgroundColor: '#fff', borderRadius: 14, marginBottom: 12, padding: 16, elevation: 1 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                     <Text style={{ fontSize: 12, color: '#9CA3AF' }}>{item.date} · {item.orderId}</Text>
                     <View style={{ backgroundColor: style.bg, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 2 }}>
-                      <Text style={{ fontSize: 11, fontWeight: '600', color: style.color }}>{item.status}</Text>
+                      <Text style={{ fontSize: 11, fontWeight: '600', color: style.color }}>{SETTLEMENT_STATUS[item.status]?.label || item.status}</Text>
                     </View>
                   </View>
                   <Text style={{ fontSize: 16, fontWeight: '700', color: '#1F2933', marginBottom: 14 }}>

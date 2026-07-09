@@ -1,4 +1,8 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { useAuth } from './authStore';
+import * as api from '../lib/api';
+import { uploadImageIfLocal } from '../lib/storage';
+import { supabase } from '../lib/supabase';
 
 const AppContext = createContext(null);
 
@@ -16,17 +20,20 @@ export const ORDER_SELLER_STATUS = {
   cancelled: { label: '취소요청', userStatus: 'cancelled', color: '#E5484D', bg: '#FFF0F0' },
 };
 
-function todayISO(h, m = 0) {
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  return d.toISOString();
-}
+// 정산 상태 라벨맵 — DB settlement_status enum(영문 키)과 1:1.
+export const SETTLEMENT_STATUS = {
+  scheduled: { label: '정산예정', color: '#FF8A3D', bg: '#FFF4ED' },
+  completed: { label: '정산완료', color: '#22A06B', bg: '#E9F8F1' },
+  on_hold:   { label: '보류',     color: '#E5484D', bg: '#FFF0F0' },
+};
 
-function todayEndISO() {
-  const d = new Date();
-  d.setHours(23, 59, 0, 0);
-  return d.toISOString();
-}
+// 결제 상태 라벨맵 — DB payment_status enum(영문 키)과 1:1.
+export const PAYMENT_STATUS = {
+  pending:   { label: '결제대기', color: '#FF8A3D' },
+  paid:      { label: '결제완료', color: '#22A06B' },
+  cancelled: { label: '결제취소', color: '#9AA3AF' },
+  refunded:  { label: '환불',     color: '#E5484D' },
+};
 
 export function computeBadges(product) {
   const badges = [];
@@ -51,461 +58,223 @@ export function allergensToString(arr) {
   return arr.join(', ') + ' 함유';
 }
 
-// TODO: GET /api/seller/products — 아래 Mock 데이터를 API 응답으로 대체
-export const initialProducts = [
-  {
-    id: 1,
-    name: '닭가슴살 샐러드',
-    storeId: 1,
-    thumbnail: null,
-    emoji: '🥗',
-    images: [],
-    category: '샐러드',
-    originalPrice: 8900,
-    salePrice: 3900,
-    discountRate: 56,
-    startPrice: 4900,
-    floorPrice: 2900,
-    reductionAmount: 500,
-    intervalMinutes: 30,
-    stock: 3,
-    pickupStart: todayISO(18),
-    pickupEnd: todayISO(20),
-    expiryDate: todayEndISO(),
-    storage: '냉장 보관',
-    storageMethod: '냉장(0~5°C) 보관, 개봉 후 즉시 섭취 권장',
-    status: 'selling',
-    badges: ['오늘까지', '마감임박'],
-    description: '신선한 닭가슴살과 야채로 구성된 건강 샐러드입니다.',
-    composition: '닭가슴살 150g, 로메인 80g, 방울토마토 30g, 드레싱 15ml',
-    origin: '닭가슴살 국내산, 채소 국내산',
-    allergyInfo: '달걀, 대두, 밀 함유',
-    allergens: ['난류', '대두', '밀'],
-    pickupAddress: '서울 강남구 테헤란로 123',
-    cancelPolicy: '픽업 전까지 취소 가능. 픽업 후 단순 변심 환불 불가.',
-    storeNotice: '픽업 시 영수증 또는 픽업번호를 보여주세요.',
-    lat: 37.5012,
-    lng: 127.0396,
-    liked: false,
-  },
-  {
-    id: 2,
-    name: '모닝빵 세트',
-    storeId: 1,
-    thumbnail: null,
-    emoji: '🥐',
-    images: [],
-    category: '빵',
-    originalPrice: 6000,
-    salePrice: 3500,
-    discountRate: 42,
-    stock: 0,
-    pickupStart: todayISO(8),
-    pickupEnd: todayISO(11),
-    expiryDate: todayISO(14),
-    storage: '실온 보관',
-    storageMethod: '실온 보관, 당일 섭취 권장',
-    status: 'soldout',
-    badges: ['품절'],
-    description: '갓 구운 모닝빵 5개 세트',
-    composition: '모닝빵 5개',
-    origin: '밀 국내산',
-    allergyInfo: '밀, 달걀, 유제품 함유',
-    allergens: ['밀', '난류', '우유'],
-    pickupAddress: '서울 강남구 테헤란로 123',
-    cancelPolicy: '픽업 전까지 취소 가능. 픽업 후 단순 변심 환불 불가.',
-    storeNotice: '',
-    lat: 37.5012,
-    lng: 127.0396,
-    liked: false,
-  },
-  {
-    id: 3,
-    name: '한식 도시락',
-    storeId: 1,
-    thumbnail: null,
-    emoji: '🍱',
-    images: [],
-    category: '도시락',
-    originalPrice: 9800,
-    salePrice: 5900,
-    discountRate: 40,
-    startPrice: 6500,
-    floorPrice: 4000,
-    reductionAmount: 600,
-    intervalMinutes: 20,
-    stock: 5,
-    pickupStart: todayISO(12),
-    pickupEnd: todayISO(14),
-    expiryDate: todayISO(18),
-    storage: '냉장 보관',
-    storageMethod: '냉장(0~5°C) 보관',
-    status: 'selling',
-    badges: ['오늘까지'],
-    description: '제철 반찬으로 구성된 한식 도시락',
-    composition: '밥 200g, 반찬 3종, 국 1종',
-    origin: '쌀 국내산, 채소 국내산',
-    allergyInfo: '대두, 밀 함유',
-    allergens: ['대두', '밀'],
-    pickupAddress: '서울 강남구 테헤란로 123',
-    cancelPolicy: '픽업 전까지 취소 가능.',
-    storeNotice: '',
-    lat: 37.5012,
-    lng: 127.0396,
-    liked: false,
-  },
-  {
-    id: 4,
-    name: '크루아상',
-    storeId: 1,
-    thumbnail: null,
-    emoji: '🥐',
-    images: [],
-    category: '빵',
-    originalPrice: 4500,
-    salePrice: 2500,
-    discountRate: 44,
-    stock: 2,
-    pickupStart: todayISO(10),
-    pickupEnd: todayISO(13),
-    expiryDate: todayISO(17),
-    storage: '실온 보관',
-    storageMethod: '실온 보관, 당일 섭취 권장',
-    status: 'hidden',
-    badges: [],
-    rejectReason: '상품 이미지가 실제 상품과 다릅니다. 정확한 상품 이미지로 교체 후 재등록해주세요.',
-    description: '버터 크루아상',
-    composition: '크루아상 1개',
-    origin: '밀 국내산',
-    allergyInfo: '밀, 달걀, 유제품 함유',
-    allergens: ['밀', '난류', '우유'],
-    pickupAddress: '서울 강남구 테헤란로 123',
-    cancelPolicy: '픽업 전까지 취소 가능.',
-    storeNotice: '',
-    lat: 37.5012,
-    lng: 127.0396,
-    liked: false,
-  },
-];
+// created_at → 상대 시간 표기 (알림 목록).
+export function formatRelativeTime(iso) {
+  if (!iso) return '';
+  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 1) return '방금 전';
+  if (diffMin < 60) return `${diffMin}분 전`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}시간 전`;
+  const diffDay = Math.floor(diffHour / 24);
+  if (diffDay === 1) return '어제';
+  if (diffDay < 7) return `${diffDay}일 전`;
+  return formatReviewDate(iso);
+}
 
-// TODO: GET /api/seller/orders?sellerStatus=all — 아래 Mock 데이터를 API 응답으로 대체
-export const initialOrders = [
-  {
-    id: 'FP-1024',
-    productId: 1,
-    productName: '닭가슴살 샐러드',
-    store: '그린샐러드 강남점',
-    storeAddress: '서울 강남구 테헤란로 123',
-    quantity: 1,
-    buyerName: '김**',
-    safeNumber: '050-7135-1024',
-    pickupStart: todayISO(18),
-    pickupEnd: todayISO(20),
-    pickupTime: '오늘 18:00~20:00',
-    paymentStatus: '결제완료',
-    sellerStatus: 'confirmed',
-    status: 'pending',
-    totalPrice: 4900,
-    amount: 4900,
-    fee: 490,
-    orderedAt: new Date().toISOString(),
-  },
-  {
-    id: 'FP-1023',
-    productId: 3,
-    productName: '한식 도시락',
-    store: '그린샐러드 강남점',
-    storeAddress: '서울 강남구 테헤란로 123',
-    quantity: 2,
-    buyerName: '이**',
-    safeNumber: '050-7135-1023',
-    pickupStart: todayISO(12),
-    pickupEnd: todayISO(14),
-    pickupTime: '오늘 12:00~14:00',
-    paymentStatus: '결제완료',
-    sellerStatus: 'new',
-    status: 'pending',
-    totalPrice: 11800,
-    amount: 11800,
-    fee: 1180,
-    orderedAt: new Date(Date.now() - 3600000).toISOString(),
-  },
-  {
-    id: 'FP-1022',
-    productId: 1,
-    productName: '닭가슴살 샐러드',
-    store: '그린샐러드 강남점',
-    storeAddress: '서울 강남구 테헤란로 123',
-    quantity: 1,
-    buyerName: '박**',
-    safeNumber: '050-7135-1022',
-    pickupStart: todayISO(18),
-    pickupEnd: todayISO(20),
-    pickupTime: '오늘 18:00~20:00',
-    paymentStatus: '결제완료',
-    sellerStatus: 'new',
-    status: 'pending',
-    totalPrice: 4900,
-    amount: 4900,
-    fee: 490,
-    orderedAt: new Date(Date.now() - 7200000).toISOString(),
-  },
-  {
-    id: 'FP-1021',
-    productId: 2,
-    productName: '모닝빵 세트',
-    store: '그린샐러드 강남점',
-    storeAddress: '서울 강남구 테헤란로 123',
-    quantity: 1,
-    buyerName: '최**',
-    safeNumber: '050-7135-1021',
-    pickupStart: todayISO(8),
-    pickupEnd: todayISO(11),
-    pickupTime: '오늘 08:00~11:00',
-    paymentStatus: '결제완료',
-    sellerStatus: 'completed',
-    status: 'completed',
-    totalPrice: 3500,
-    amount: 3500,
-    fee: 350,
-    orderedAt: new Date(Date.now() - 86400000 / 2).toISOString(),
-  },
-  {
-    id: 'FP-1020',
-    productId: 3,
-    productName: '한식 도시락',
-    store: '그린샐러드 강남점',
-    storeAddress: '서울 강남구 테헤란로 123',
-    quantity: 1,
-    buyerName: '정**',
-    safeNumber: '050-7135-1020',
-    pickupStart: todayISO(12),
-    pickupEnd: todayISO(14),
-    pickupTime: '어제 12:00~14:00',
-    paymentStatus: '결제완료',
-    sellerStatus: 'cancelled',
-    status: 'cancelled',
-    totalPrice: 5900,
-    amount: 5900,
-    fee: 590,
-    orderedAt: new Date(Date.now() - 86400000).toISOString(),
-    cancelReason: '단순 변심으로 인한 취소입니다.',
-    cancelledAt: new Date(Date.now() - 86400000 + 300000).toISOString(),
-  },
-];
+// created_at → 'YYYY.MM.DD' (리뷰 목록)
+export function formatReviewDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
 
-// TODO: GET /api/seller/reviews — 아래 Mock 데이터를 API 응답으로 대체
-export const initialReviews = [
-  { id: 'R-001', user: '김민정', rating: 5, date: '2024.06.14', text: '샐러드가 정말 신선하고 맛있어요! 가성비 최고입니다. 매일 먹고 싶을 정도예요.', helpful: 8, ownerReply: '소중한 리뷰 감사해요! 앞으로도 신선하고 맛있는 샐러드로 보답하겠습니다 😊' },
-  { id: 'R-002', user: '이준혁', rating: 5, date: '2024.06.12', text: '닭가슴살이 촉촉하고 드레싱도 맛있어요. 다이어트 중인데 딱 좋습니다.', helpful: 5, ownerReply: null },
-  { id: 'R-003', user: '박소연', rating: 4, date: '2024.06.10', text: '신선하고 양이 충분해요. 다음에도 구매할 것 같아요.', helpful: 3, ownerReply: null },
-  { id: 'R-004', user: '최현우', rating: 5, date: '2024.06.08', text: '픽업도 편하고 상품도 너무 좋았어요! 강추합니다.', helpful: 2, ownerReply: '방문해 주셔서 감사합니다! 또 만나요 🙏' },
-];
+// pickup_start/pickup_end → '오늘/어제/내일/M.D HH:MM~HH:MM' (주문 상세)
+export function formatPickupWindow(start, end) {
+  if (!start) return '';
+  const s = new Date(start);
+  const hm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const sDay = new Date(s); sDay.setHours(0, 0, 0, 0);
+  const dayDiff = Math.round((sDay - today) / 86400000);
+  const dayLabel = dayDiff === 0 ? '오늘' : dayDiff === -1 ? '어제' : dayDiff === 1 ? '내일' : `${s.getMonth() + 1}.${s.getDate()}`;
+  return `${dayLabel} ${hm(s)}${end ? '~' + hm(new Date(end)) : ''}`;
+}
 
-// TODO: GET /api/seller/settlements?period=...&status=... — 아래 Mock 데이터를 API 응답으로 대체
-export const initialSettlements = [
-  { id: 'ST-001', orderId: 'FP-1021', productName: '모닝빵 세트',     amount: 3500, fee: 350, platformFee: 280, pgFee: 70, refund: 0, settlement: 3150, status: '정산완료', date: '2026-07-01' },
-  { id: 'ST-002', orderId: 'FP-1019', productName: '닭가슴살 샐러드', amount: 4900, fee: 490, platformFee: 392, pgFee: 98, refund: 0, settlement: 4410, status: '정산예정', date: '2026-07-01' },
-  { id: 'ST-003', orderId: 'FP-1018', productName: '한식 도시락',     amount: 5900, fee: 590, platformFee: 472, pgFee: 118, refund: 0, settlement: 5310, status: '보류',     date: '2026-06-25' },
-];
-
-// TODO: GET /api/seller/notifications — 아래 Mock 데이터를 API 응답으로 대체
-export const initialNotifications = [
-  { id: 'N-001', type: 'reject',     title: '상품 반려', message: '크루아상 상품이 반려되었습니다. 사유를 확인하고 재등록해주세요.', time: '방금 전', read: false },
-  { id: 'N-002', type: 'cancel',     title: '주문 취소', message: 'FP-1020 한식 도시락 주문이 취소되었습니다.', time: '1시간 전', read: false },
-  { id: 'N-003', type: 'settlement', title: '정산 완료', message: '6/23~6/29 정산금액 3,150원이 지급되었습니다.', time: '어제', read: true },
-];
-
-// TODO: GET /api/notices — 아래 Mock 데이터를 API 응답으로 대체
-export const notices = [
-  {
-    id: 'NC-001',
-    emoji: '📣',
-    title: '여름 성수기 안내',
-    content: '7~8월 성수기 기간 중 픽업 시간 변동에 유의하세요.\n\n주문량 증가로 픽업 대기 시간이 늘어날 수 있습니다. 픽업 종료 시간을 여유 있게 설정하시고, 재고 수량도 넉넉히 등록해 주시기 바랍니다.\n\n기간: 2026년 7월 1일 ~ 8월 31일',
-    date: '2026-07-01',
-  },
-  {
-    id: 'NC-002',
-    emoji: '💳',
-    title: '정산 계좌 변경 안내',
-    content: '정산 계좌는 정산일(매주 수요일) 기준 3일 전까지만 변경 가능합니다.\n\n예를 들어 7월 9일(수) 정산일의 경우, 7월 6일(일)까지 계좌 변경이 가능합니다.\n\n계좌 변경은 매장관리 > 정보 변경 신청에서 진행하실 수 있습니다.',
-    date: '2026-06-28',
-  },
-  {
-    id: 'NC-003',
-    emoji: '🎉',
-    title: '신규 판매자 혜택 안내',
-    content: '신규 판매자를 위한 특별 혜택을 안내드립니다!\n\n첫 달 플랫폼 수수료 50% 할인 이벤트를 진행 중입니다.\n\n· 대상: 2026년 7월 31일까지 신규 입점한 판매자\n· 혜택: 입점 후 첫 달 플랫폼 수수료 50% 할인\n· 문의: 고객센터 (02-1234-5678)',
-    date: '2026-06-25',
-  },
-];
+function withBadges(p) {
+  return { ...p, badges: computeBadges(p) };
+}
 
 export function AppProvider({ children }) {
-  // TODO: GET /api/seller/store — 아래 Mock 데이터를 API 응답으로 대체
-  const [storeInfo, setStoreInfo] = useState({
-    id: 1,
-    name: '그린샐러드 강남점',
-    bizNumber: '123-45-67890',
-    ownerName: '홍길동',
-    openHours: {
-      allSame: true,
-      sameOpen: '08:00',
-      sameClose: '21:00',
-      days: {
-        mon: { isOpen: true,  open: '08:00', close: '21:00' },
-        tue: { isOpen: true,  open: '08:00', close: '21:00' },
-        wed: { isOpen: true,  open: '08:00', close: '21:00' },
-        thu: { isOpen: true,  open: '08:00', close: '21:00' },
-        fri: { isOpen: true,  open: '08:00', close: '21:00' },
-        sat: { isOpen: true,  open: '08:00', close: '21:00' },
-        sun: { isOpen: false, open: '08:00', close: '21:00' },
-      },
-    },
-    closedDays: ['sun'],
-    address: '서울 강남구 테헤란로 123',
-    phone: '02-1234-5678',
-    bankName: '국민은행',
-    accountNumber: '123-456-789012',
-    accountHolder: '홍길동',
-    residentNumber: '880101-1',
-    approvalStatus: 'approved',
-    commissionRate: 10,
-    contractStartDate: '2024-01-15',
-    isSellingPaused: false,
-    category: '샐러드·건강식',
-    rating: 4.8,
-    reviewCount: 124,
-    lat: 37.5012,
-    lng: 127.0396,
-    description: '매일 신선한 재료로 만드는 건강 샐러드 전문점입니다.',
-    notice: '픽업 시 영수증 또는 픽업번호를 보여주세요.',
-    tags: ['샐러드', '건강식', '다이어트'],
-    storeImage: null,
-  });
+  const { user } = useAuth();
+  const [storeInfo, setStoreInfoState] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [settlements, setSettlements] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [notices, setNotices] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const [products, setProducts] = useState(initialProducts);
-  const [orders, setOrders] = useState(initialOrders);
-  const [settlements] = useState(initialSettlements);
-  const [reviews, setReviews] = useState(initialReviews);
-  const [notifications, setNotifications] = useState(initialNotifications);
+  const reloadProducts = useCallback(async () => {
+    setProducts((await api.fetchProducts()).map(withBadges));
+  }, []);
+  const reloadOrders = useCallback(async () => { setOrders(await api.fetchOrders()); }, []);
+  const reloadReviews = useCallback(async () => { setReviews(await api.fetchReviews()); }, []);
+  const reloadNotifications = useCallback(async () => { setNotifications(await api.fetchNotifications()); }, []);
+  const reloadSettlements = useCallback(async () => { setSettlements(await api.fetchSettlements()); }, []);
+  const reloadStore = useCallback(async () => { setStoreInfoState(await api.fetchStore()); }, []);
 
-  // TODO: PATCH /api/seller/notifications/:id/read
-  const markNotificationRead = (id) => setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-  // TODO: PATCH /api/seller/notifications/read-all
-  const markAllNotificationsRead = () => setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [s, p, o, st, r, n, nc] = await Promise.all([
+        api.fetchStore(),
+        api.fetchProducts(),
+        api.fetchOrders(),
+        api.fetchSettlements(),
+        api.fetchReviews(),
+        api.fetchNotifications(),
+        api.fetchNotices(),
+      ]);
+      setStoreInfoState(s);
+      setProducts(p.map(withBadges));
+      setOrders(o);
+      setSettlements(st);
+      setReviews(r);
+      setNotifications(n);
+      setNotices(nc);
+    } catch (e) {
+      console.warn('[appStore] 데이터 로드 실패:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  // TODO: PATCH /api/seller/store/selling-status { isSellingPaused: boolean }
+  useEffect(() => {
+    if (user) {
+      setLoading(true);
+      loadAll();
+    } else {
+      setStoreInfoState(null);
+      setProducts([]);
+      setOrders([]);
+      setSettlements([]);
+      setReviews([]);
+      setNotifications([]);
+      setNotices([]);
+      setLoading(false);
+    }
+  }, [user, loadAll]);
+
+  // Realtime: 서버 변경(신규주문·정산·알림·리뷰 등)을 실시간 반영.
+  // postgres_changes는 RLS를 따르므로 본인(seller_id=auth.uid()) 행 이벤트만 수신한다.
+  useEffect(() => {
+    if (!user) return undefined;
+    const channel = supabase
+      .channel('seller-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, reloadOrders)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, reloadNotifications)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, reloadProducts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reviews' }, reloadReviews)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements' }, reloadSettlements)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'stores' }, reloadStore)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user, reloadOrders, reloadNotifications, reloadProducts, reloadReviews, reloadSettlements, reloadStore]);
+
+  // ── 매장: 로컬 즉시 반영 + 허용 컬럼만 DB 영속(approval_status 등은 storeToDb에서 자동 제외) ──
+  const setStoreInfo = (updater) => {
+    const next = typeof updater === 'function' ? updater(storeInfo) : updater;
+    setStoreInfoState(next);
+    (async () => {
+      try {
+        let toPersist = next;
+        // 로컬 매장 이미지면 Storage 업로드 후 URL로 교체
+        if (next?.storeImage && !/^https?:\/\//.test(next.storeImage)) {
+          const url = await uploadImageIfLocal(next.storeImage, null, 'store');
+          toPersist = { ...next, storeImage: url };
+          setStoreInfoState(toPersist);
+        }
+        await api.updateStoreRow(api.storeToDb(toPersist || {}));
+      } catch (e) { console.warn('[store 저장]', e.message); }
+    })();
+  };
+
   const pauseSale = () => setStoreInfo(s => ({ ...s, isSellingPaused: true }));
   const resumeSale = () => setStoreInfo(s => ({ ...s, isSellingPaused: false }));
 
-  // TODO: PATCH /api/seller/products/:id/stock { delta: number }
-  const updateProductStock = (id, delta) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id !== id) return p;
-      const newStock = Math.max(0, p.stock + delta);
-      const newStatus = newStock === 0 && p.status === 'selling' ? 'soldout' : p.status;
-      return { ...p, stock: newStock, status: newStatus, badges: computeBadges({ ...p, stock: newStock, status: newStatus }) };
-    }));
+  // ── 상품 ──
+  const updateProductStock = async (id, delta) => {
+    const p = products.find(x => x.id === id);
+    if (!p) return;
+    const newStock = Math.max(0, p.stock + delta);
+    try { await api.updateProductRow(id, { stock: newStock }); await reloadProducts(); }
+    catch (e) { console.warn('[재고 변경]', e.message); }
   };
 
-  // TODO: PATCH /api/seller/products/:id/status { status: string }
-  const updateProductStatus = (id, status) => {
-    setProducts(prev => prev.map(p =>
-      p.id === id ? { ...p, status, pauseReason: null, badges: computeBadges({ ...p, status }) } : p
-    ));
+  const updateProductStatus = async (id, status) => {
+    try { await api.updateProductRow(id, { status, pause_reason: null }); await reloadProducts(); }
+    catch (e) { console.warn('[상태 변경]', e.message); }
   };
 
-  // TODO: 서버 스케줄러 처리 권장 (앱이 백그라운드일 때 클라이언트 감지 불가) — PATCH /api/seller/products/:id/status { status: 'paused', pauseReason: 'expiry' }
-  const expireProduct = (id) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id !== id || p.status !== 'selling') return p;
-      const updated = { ...p, status: 'paused', pauseReason: 'expiry' };
-      return { ...updated, badges: computeBadges(updated) };
-    }));
+  // 소비기한 만료 자동중지·자동 시간차 인하는 서버 스케줄러(pg_cron: expire_products /
+  // reduce_product_prices, 5분 주기)가 단독 처리한다. 클라이언트 중복 실행 금지(API_SPEC §9/§12).
+
+  const addProduct = async (product) => {
+    try { await api.insertProduct(storeInfo, product); await reloadProducts(); }
+    catch (e) { console.warn('[상품 등록]', e.message); }
   };
 
-  // TODO: POST /api/seller/products — 응답에서 서버 생성 id 사용
-  const addProduct = (product) => {
-    const newProduct = {
-      ...product,
-      id: Date.now(),
-      storeId: storeInfo.id,
-      status: 'selling',
-      liked: false,
-      badges: [],
-      pickupAddress: storeInfo.address,
-      lat: storeInfo.lat,
-      lng: storeInfo.lng,
-      store: storeInfo.name,
-    };
-    setProducts(prev => [...prev, newProduct]);
+  const updateProduct = async (id, data) => {
+    try { await api.updateProductData(id, data); await reloadProducts(); }
+    catch (e) { console.warn('[상품 수정]', e.message); }
   };
 
-  // TODO: PUT /api/seller/products/:id
-  const updateProduct = (id, data) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id !== id) return p;
-      const updated = { ...p, ...data };
-      return { ...updated, badges: computeBadges(updated) };
-    }));
+  const deleteProduct = async (id) => {
+    try { await api.deleteProductRow(id); await reloadProducts(); }
+    catch (e) { console.warn('[상품 삭제]', e.message); }
   };
 
-  // TODO: PATCH /api/seller/orders/:id/complete
-  const completePickup = (orderId) => {
-    setOrders(prev => prev.map(o =>
-      o.id === orderId ? { ...o, sellerStatus: 'completed', status: 'completed' } : o
-    ));
+  // ── 주문 (상태 전이 시각은 stamp 트리거가 자동 기록) ──
+  const completePickup = async (orderId) => {
+    try { await api.updateOrderStatus(orderId, 'completed'); await reloadOrders(); }
+    catch (e) { console.warn('[픽업 완료]', e.message); }
+  };
+  const confirmOrder = async (orderId) => {
+    try { await api.updateOrderStatus(orderId, 'confirmed'); await reloadOrders(); }
+    catch (e) { console.warn('[주문 확인]', e.message); }
+  };
+  const cancelOrder = async (orderId, reason) => {
+    const extra = reason && reason.trim() ? { cancel_reason: reason.trim() } : {};
+    try { await api.updateOrderStatus(orderId, 'cancelled', extra); await reloadOrders(); }
+    catch (e) { console.warn('[주문 취소]', e.message); }
   };
 
-  // TODO: PATCH /api/seller/orders/:id/confirm
-  const confirmOrder = (orderId) => {
-    setOrders(prev => prev.map(o =>
-      o.id === orderId ? { ...o, sellerStatus: 'confirmed', status: 'pending' } : o
-    ));
+  // ── 리뷰 ──
+  const updateReviewReply = async (reviewId, reply) => {
+    try { await api.updateReviewReplyRow(reviewId, reply); await reloadReviews(); }
+    catch (e) { console.warn('[리뷰 답글]', e.message); }
   };
 
-  // TODO: PATCH /api/seller/orders/:id/cancel
-  const cancelOrder = (orderId) => {
-    setOrders(prev => prev.map(o =>
-      o.id === orderId ? { ...o, sellerStatus: 'cancelled', status: 'cancelled' } : o
-    ));
+  // ── 알림 (낙관적 반영) ──
+  const markNotificationRead = (id) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    api.markNotifRead(id).catch(e => console.warn('[알림 읽음]', e.message));
   };
-
-  // TODO: DELETE /api/seller/products/:id
-  const deleteProduct = (id) => {
-    setProducts(prev => prev.filter(p => p.id !== id));
+  const markAllNotificationsRead = () => {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    api.markAllNotifRead().catch(e => console.warn('[알림 모두읽음]', e.message));
   };
-
-  // TODO: 서버 스케줄러 처리 권장 — PATCH /api/seller/products/:id/price { salePrice: number, discountRate: number }
-  const reduceProductPrice = (id) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id !== id || !p.reductionAmount || !p.floorPrice || p.status !== 'selling') return p;
-      const newSalePrice = Math.max(p.floorPrice, p.salePrice - p.reductionAmount);
-      const newDiscountRate = Math.round((1 - newSalePrice / p.originalPrice) * 100);
-      const updated = { ...p, salePrice: newSalePrice, discountRate: newDiscountRate };
-      return { ...updated, badges: computeBadges(updated) };
-    }));
-  };
-
-  // TODO: PUT /api/seller/reviews/:id/reply { reply: string | null }
-  const updateReviewReply = (reviewId, reply) => {
-    setReviews(prev => prev.map(r =>
-      r.id === reviewId ? { ...r, ownerReply: reply || null } : r
-    ));
+  const deleteNotification = (id) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+    api.deleteNotification(id).catch(e => { console.warn('[알림 삭제]', e.message); reloadNotifications(); });
   };
 
   const value = {
+    loading,
+    reload: loadAll,
     storeInfo, setStoreInfo,
     products, setProducts,
     orders, settlements,
     reviews,
+    notices,
     pauseSale, resumeSale,
     updateProductStock, updateProductStatus,
-    addProduct, updateProduct, deleteProduct, reduceProductPrice, expireProduct,
+    addProduct, updateProduct, deleteProduct,
     completePickup, confirmOrder, cancelOrder,
     updateReviewReply,
-    notifications, markNotificationRead, markAllNotificationsRead,
+    notifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

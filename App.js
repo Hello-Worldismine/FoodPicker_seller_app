@@ -5,9 +5,10 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text } from 'react-native';
+import { View, Text, ActivityIndicator } from 'react-native';
 
 import { AppProvider, useApp } from './src/store/appStore';
+import { AuthProvider, useAuth } from './src/store/authStore';
 
 import HomeScreen from './src/screens/Home';
 import ProductsScreen from './src/screens/Products';
@@ -19,6 +20,9 @@ import OrderDetailScreen from './src/screens/OrderDetail';
 import ReviewsScreen from './src/screens/Reviews';
 import NoticeListScreen from './src/screens/NoticeList';
 import NoticeDetailScreen from './src/screens/NoticeDetail';
+import LoginScreen from './src/screens/Login';
+import SignUpScreen from './src/screens/SignUp';
+import OnboardingScreen from './src/screens/Onboarding';
 
 import {
   Home,
@@ -151,15 +155,44 @@ function RootNavigator() {
   );
 }
 
+function AuthNavigator() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Login" component={LoginScreen} />
+      <Stack.Screen name="SignUp" component={SignUpScreen} />
+    </Stack.Navigator>
+  );
+}
+
+// 세션 유무에 따라 인증 화면 / 앱 본체를 분기
+function Gate() {
+  const { session, loading: authLoading } = useAuth();
+  const { loading: dataLoading, storeInfo } = useApp();
+  const splash = (
+    <View style={{ flex: 1, backgroundColor: '#22A06B', alignItems: 'center', justifyContent: 'center' }}>
+      <ActivityIndicator color="#fff" size="large" />
+    </View>
+  );
+  if (authLoading) return splash;
+  if (!session) return <AuthNavigator />;
+  // 로그인됐지만 매장 데이터 로딩 중이면 스플래시 유지(화면들의 null 접근 방지)
+  if (dataLoading) return splash;
+  // 로딩이 끝났는데 매장이 없으면(가입 직후 미프로비저닝) 온보딩으로 유도 — 무한 스플래시 방지
+  if (!storeInfo) return <OnboardingScreen />;
+  return <RootNavigator />;
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppProvider>
-        <NavigationContainer>
-          <StatusBar style="auto" />
-          <RootNavigator />
-        </NavigationContainer>
-      </AppProvider>
+      <AuthProvider>
+        <AppProvider>
+          <NavigationContainer>
+            <StatusBar style="auto" />
+            <Gate />
+          </NavigationContainer>
+        </AppProvider>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
