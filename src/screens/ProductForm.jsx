@@ -30,7 +30,15 @@ import {
   X,
 } from 'lucide-react-native';
 
-const CATEGORIES = ['빵', '도시락', '샐러드', '반찬', '디저트', '음료', '기타'];
+const CATEGORIES = [
+  { key: '베이커리·디저트', emoji: '🥐' },
+  { key: '도시락·간편식', emoji: '🍱' },
+  { key: '샐러드·건강식', emoji: '🥗' },
+  { key: '반찬·밀키트', emoji: '🥘' },
+  { key: '채소·과일', emoji: '🥦' },
+  { key: '정육·수산', emoji: '🥩' },
+  { key: '음료·기타', emoji: '🧋' },
+];
 const STORAGE_METHODS = ['실온', '냉장', '냉동'];
 const ALLERGEN_LIST = ['난류', '우유', '메밀', '땅콩', '대두', '밀', '고등어', '게', '새우', '돼지고기', '복숭아', '토마토'];
 const INTERVAL_PRESETS = [
@@ -87,8 +95,7 @@ function formatDuration(hours, mins) {
 }
 
 function getCategoryEmoji(cat) {
-  const map = { '샐러드': '🥗', '빵': '🥐', '도시락': '🍱', '음료': '🥤', '과일': '🍎', '디저트': '🍰', '간편식': '🍜', '반찬': '🥘', '기타': '🛍️' };
-  return map[cat] || '🛍️';
+  return CATEGORIES.find(c => c.key === cat)?.emoji || '🛍️';
 }
 
 function toComma(raw) {
@@ -158,7 +165,20 @@ export default function ProductFormScreen() {
     !startPriceError && !floorPriceError &&
     parseInt(reductionAmount) > (parseInt(startPrice) - parseInt(floorPrice)));
 
-  const expiryTimeError = !!(expiryTime && pickupEnd && expiryTime > pickupEnd);
+  // 소비기한(날짜+시간)이 픽업 종료(오늘 날짜 기준 시각)보다 빠른 경우만 오류.
+  // 소비기한 날짜가 오늘보다 미래라면 시간 비교와 무관하게 항상 통과해야 한다.
+  const expiryTimeError = useMemo(() => {
+    if (!expiryDate || !expiryTime || !pickupEnd) return false;
+    const [ey, em, ed] = expiryDate.split('-').map(Number);
+    const [eh, emi] = expiryTime.split(':').map(Number);
+    const expiryDateTime = new Date(ey, em - 1, ed, eh, emi, 0);
+
+    const [ph, pm] = pickupEnd.split(':').map(Number);
+    const pickupEndDateTime = new Date();
+    pickupEndDateTime.setHours(ph, pm, 0, 0);
+
+    return expiryDateTime < pickupEndDateTime;
+  }, [expiryDate, expiryTime, pickupEnd]);
 
   const discountRate = originalPrice && startPrice && !startPriceError
     ? Math.round((1 - parseInt(startPrice) / parseInt(originalPrice)) * 100)
@@ -271,7 +291,7 @@ export default function ProductFormScreen() {
     if (startPriceError) { Alert.alert('오류', '시작가는 정상가보다 낮아야 합니다.'); return; }
     if (floorPriceError) { Alert.alert('오류', '하한가는 시작가보다 낮아야 합니다.'); return; }
     if (reductionError) { Alert.alert('오류', '회당 인하 금액은 (시작가 - 하한가)를 초과할 수 없습니다.'); return; }
-    if (expiryTimeError) { Alert.alert('오류', '소비기한 시간이 픽업 종료 시간보다 늦을 수 없습니다.'); return; }
+    if (expiryTimeError) { Alert.alert('오류', '소비기한은 픽업 종료 시간보다 빠를 수 없습니다.'); return; }
     if (!stock || isNaN(parseInt(stock))) { Alert.alert('오류', '판매 수량을 입력해주세요.'); return; }
 
     const [ey, em, ed] = expiryDate.split('-').map(Number);
@@ -424,17 +444,17 @@ export default function ProductFormScreen() {
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {CATEGORIES.map(cat => (
                 <TouchableOpacity
-                  key={cat}
+                  key={cat.key}
                   activeOpacity={1}
-                  onPress={() => setCategory(cat)}
+                  onPress={() => setCategory(cat.key)}
                   style={{
                     paddingHorizontal: 16, paddingVertical: 9, borderRadius: 20,
-                    backgroundColor: category === cat ? '#22A06B' : '#fff',
-                    borderWidth: 1, borderColor: category === cat ? '#22A06B' : '#E5E7EB',
+                    backgroundColor: category === cat.key ? '#22A06B' : '#fff',
+                    borderWidth: 1, borderColor: category === cat.key ? '#22A06B' : '#E5E7EB',
                   }}
                 >
-                  <Text style={{ fontSize: 14, fontWeight: '600', color: category === cat ? '#fff' : '#6B7280' }}>
-                    {cat}
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: category === cat.key ? '#fff' : '#6B7280' }}>
+                    {cat.key}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -609,7 +629,7 @@ export default function ProductFormScreen() {
               </TouchableOpacity>
             </View>
             {expiryTimeError && (
-              <Text style={{ fontSize: 12, color: '#E5484D', marginTop: 6 }}>소비기한 시간이 픽업 종료 시간({pickupEnd})보다 늦을 수 없습니다.</Text>
+              <Text style={{ fontSize: 12, color: '#E5484D', marginTop: 6 }}>소비기한은 픽업 종료 시간({pickupEnd})보다 빠를 수 없습니다.</Text>
             )}
           </View>
 

@@ -2,6 +2,7 @@
 // DB(snake_case, enum) ↔ 앱(camelCase) 매핑 + 조회/변경 쿼리.
 import { supabase } from './supabase';
 import { uploadImages } from './storage';
+import { formatPhone } from './format';
 
 async function currentUid() {
   const { data } = await supabase.auth.getUser();
@@ -21,7 +22,7 @@ export function mapStore(r) {
     bankName: r.bank_name,
     accountNumber: r.account_number,
     accountHolder: r.account_holder,
-    phone: r.phone,
+    phone: formatPhone(r.phone),
     category: r.category,
     description: r.description,
     notice: r.notice,

@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeft } from 'lucide-react-native';
 import { supabase } from '../lib/supabase';
+import { formatPhone } from '../lib/format';
 
 export default function SignUpScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -122,7 +123,7 @@ export default function SignUpScreen({ navigation }) {
           <Text style={label}>대표자명</Text>
           <TextInput style={input} placeholder="대표자 성명" placeholderTextColor="#C4C9D0" value={ownerName} onChangeText={setOwnerName} />
           <Text style={label}>매장 전화</Text>
-          <TextInput style={input} placeholder="02-1234-5678" placeholderTextColor="#C4C9D0" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
+          <TextInput style={input} placeholder="02-1234-5678" placeholderTextColor="#C4C9D0" keyboardType="phone-pad" value={phone} onChangeText={t => setPhone(formatPhone(t))} maxLength={13} />
 
           <View style={{ backgroundColor: '#FFF4ED', borderRadius: 12, padding: 14, marginBottom: 20 }}>
             <Text style={{ fontSize: 12, color: '#B45309', lineHeight: 18 }}>
