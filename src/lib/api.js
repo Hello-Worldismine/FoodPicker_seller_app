@@ -259,7 +259,15 @@ export async function fetchNotifications() {
   return (data || []).map(mapNotification);
 }
 export async function fetchNotices() {
-  const { data, error } = await supabase.from('notices').select('*').eq('is_published', true).order('published_at', { ascending: false });
+  // target: 관리자 웹이 공지 대상(all/buyer/seller)을 지정 — 판매자 앱은 전체·판매자 대상만 노출.
+  // (20260716 마이그레이션 이전 DB 에는 target 컬럼이 없으므로 실패 시 필터 없이 재조회)
+  let { data, error } = await supabase.from('notices').select('*')
+    .eq('is_published', true).in('target', ['all', 'seller'])
+    .order('published_at', { ascending: false });
+  if (error) {
+    ({ data, error } = await supabase.from('notices').select('*')
+      .eq('is_published', true).order('published_at', { ascending: false }));
+  }
   if (error) throw error;
   return (data || []).map(mapNotice);
 }
