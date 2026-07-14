@@ -129,6 +129,7 @@ export function mapSettlement(r) {
     platformFee: r.platform_fee,
     pgFee: r.pg_fee,
     refund: r.refund,
+    couponBurden: r.coupon_burden || 0,   // 쿠폰 할인 판매자 부담액
     settlement: r.settlement_amount,
     status: r.status,
     date: r.settled_on,
@@ -153,6 +154,29 @@ export function mapNotice(r) {
     title: r.title,
     content: r.content,
     date: r.published_at,
+  };
+}
+
+export function mapCoupon(r) {
+  return {
+    id: r.id,
+    code: r.code,
+    name: r.name,
+    discountType: r.discount_type,        // 'amount' | 'rate'
+    discountValue: r.discount_value,
+    maxDiscountAmount: r.max_discount_amount,
+    minOrderAmount: r.min_order_amount,
+    endsOn: r.ends_on,
+    isActive: r.is_active,
+    allowStacking: r.allow_stacking,
+    costBearer: r.cost_bearer,             // 'platform' | 'seller' | 'shared'
+    platformShare: r.platform_share,
+    source: r.source,                      // 'admin' | 'seller'
+    sellerId: r.seller_id,
+    requestStatus: r.request_status,       // 'pending' | 'approved' | 'rejected' | null
+    rejectReason: r.reject_reason,
+    totalQuantity: r.total_quantity,
+    createdAt: r.created_at,
   };
 }
 
@@ -238,6 +262,29 @@ export async function fetchNotices() {
   const { data, error } = await supabase.from('notices').select('*').eq('is_published', true).order('published_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapNotice);
+}
+// 본인이 발행 신청한 쿠폰(대기/승인/반려 포함). RLS: seller_id = auth.uid()
+export async function fetchMyCoupons() {
+  const seller_id = await currentUid();
+  const { data, error } = await supabase.from('coupons').select('*')
+    .eq('seller_id', seller_id).order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapCoupon);
+}
+// 쿠폰 발행 신청(서버가 부담주체/상태 강제). 성공 시 생성된 쿠폰 반환.
+export async function requestCoupon(d) {
+  const { data, error } = await supabase.rpc('request_coupon', {
+    p_name: d.name,
+    p_discount_type: d.discountType,
+    p_discount_value: d.discountValue,
+    p_min_order_amount: d.minOrderAmount ?? 0,
+    p_ends_on: d.endsOn || null,
+    p_allow_stacking: !!d.allowStacking,
+    p_max_discount_amount: d.discountType === 'rate' ? (d.maxDiscountAmount ?? null) : null,
+    p_total_quantity: d.totalQuantity ?? null,
+  });
+  if (error) throw error;
+  return mapCoupon(data);
 }
 
 // ───────── 변경 ─────────

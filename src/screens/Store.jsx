@@ -44,6 +44,7 @@ import {
   Navigation,
   MessageSquare,
   Heart,
+  Ticket,
 } from 'lucide-react-native';
 
 const APPROVAL_CONFIG = {
@@ -998,6 +999,33 @@ export default function StoreScreen() {
             <View className="flex-row items-center gap-3">
               <Star color="#22A06B" size={18} />
               <Text className="font-semibold text-charcoal text-[16px]">리뷰 관리</Text>
+            </View>
+            <ChevronRight color="#9AA3AF" size={18} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Coupon Management */}
+        <View className="mx-4 mb-3 bg-white rounded-xl overflow-hidden shadow-sm" style={{ elevation: 1 }}>
+          <View className="px-4 py-3 border-b border-gray-100">
+            <Text className="font-bold text-charcoal text-[16px]">쿠폰 관리</Text>
+          </View>
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5 border-b border-gray-50"
+            onPress={() => navigation.navigate('CouponRequest')}
+          >
+            <View className="flex-row items-center gap-3">
+              <Ticket color="#22A06B" size={18} />
+              <Text className="font-semibold text-charcoal text-[16px]">쿠폰 만들기</Text>
+            </View>
+            <ChevronRight color="#9AA3AF" size={18} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5"
+            onPress={() => navigation.navigate('CouponStatus')}
+          >
+            <View className="flex-row items-center gap-3">
+              <FileText color="#9AA3AF" size={18} />
+              <Text className="font-semibold text-charcoal text-[16px]">신청 현황</Text>
             </View>
             <ChevronRight color="#9AA3AF" size={18} />
           </TouchableOpacity>

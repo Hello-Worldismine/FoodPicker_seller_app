@@ -317,6 +317,12 @@ export default function SettlementScreen() {
                         <Text style={{ fontSize: 13, color: '#E5484D' }}>-{formatPrice(item.refund)}</Text>
                       </View>
                     )}
+                    {item.couponBurden > 0 && (
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                        <Text style={{ fontSize: 13, color: '#6B7280' }}>쿠폰 할인 부담액</Text>
+                        <Text style={{ fontSize: 13, color: '#E5484D' }}>-{formatPrice(item.couponBurden)}</Text>
+                      </View>
+                    )}
                     <View style={{ height: 1, backgroundColor: '#F3F4F6', marginVertical: 2 }} />
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                       <Text style={{ fontSize: 14, fontWeight: '700', color: '#374151' }}>정산금액</Text>

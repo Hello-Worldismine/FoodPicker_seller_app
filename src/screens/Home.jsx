@@ -22,9 +22,11 @@ function formatPrice(n) {
 }
 
 const NOTIF_TYPE_COLOR = {
-  reject:     { color: '#E5484D', bg: '#FFF0F0' },
-  cancel:     { color: '#FF8A3D', bg: '#FFF4ED' },
-  settlement: { color: '#22A06B', bg: '#E9F8F1' },
+  reject:          { color: '#E5484D', bg: '#FFF0F0' },
+  cancel:          { color: '#FF8A3D', bg: '#FFF4ED' },
+  settlement:      { color: '#22A06B', bg: '#E9F8F1' },
+  coupon_approved: { color: '#22A06B', bg: '#E9F8F1' },
+  coupon_rejected: { color: '#E5484D', bg: '#FFF0F0' },
 };
 
 export default function HomeScreen() {
