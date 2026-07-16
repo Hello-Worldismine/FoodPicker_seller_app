@@ -20,6 +20,8 @@ import OrderDetailScreen from './src/screens/OrderDetail';
 import ReviewsScreen from './src/screens/Reviews';
 import NoticeListScreen from './src/screens/NoticeList';
 import NoticeDetailScreen from './src/screens/NoticeDetail';
+import CouponRequestScreen from './src/screens/CouponRequest';
+import CouponStatusScreen from './src/screens/CouponStatus';
 import LoginScreen from './src/screens/Login';
 import SignUpScreen from './src/screens/SignUp';
 import OnboardingScreen from './src/screens/Onboarding';
@@ -151,6 +153,8 @@ function RootNavigator() {
       <Stack.Screen name="Reviews" component={ReviewsScreen} />
       <Stack.Screen name="NoticeList" component={NoticeListScreen} />
       <Stack.Screen name="NoticeDetail" component={NoticeDetailScreen} />
+      <Stack.Screen name="CouponRequest" component={CouponRequestScreen} />
+      <Stack.Screen name="CouponStatus" component={CouponStatusScreen} />
     </Stack.Navigator>
   );
 }
