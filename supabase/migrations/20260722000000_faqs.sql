@@ -8,13 +8,6 @@
 -- ============================================================================
 
 -- ── 1) FAQS (자주 묻는 질문) ─────────────────────────────────────────────────
--- 시드 가드용: 이번 실행에서 테이블이 "새로 생성"되는지 기록.
--- (테이블이 비어 있는지가 아니라 최초 설치인지를 기준으로 시드해야,
---  관리자가 FAQ 를 전부 삭제한 상태에서 재실행해도 삭제 의도가 보존된다.)
-drop table if exists _faqs_preexisted;
-create temp table _faqs_preexisted as
-  select (to_regclass('public.faqs') is not null) as existed;
-
 create table if not exists public.faqs (
   id            uuid primary key default gen_random_uuid(),
   category      text not null,                     -- order_payment/pickup/product_store/account
@@ -49,8 +42,11 @@ create policy faqs_admin_delete on public.faqs for delete to authenticated
   using ((select public.is_admin()));
 
 -- ── 3) 시드 (소비자 앱 FAQScreen.js 하드코딩 10건 이관) ─────────────────────
---   멱등: 최초 설치(이번 실행에서 테이블 신규 생성)에만 시드.
---   기존 설치 재실행 시에는 관리자의 수정/전체 삭제 상태를 그대로 보존한다.
+--   멱등: faqs 에 데이터가 하나라도 있으면 전체 건너뜀(운영 중 관리자 수정 보존).
+--   ⚠️ Supabase SQL Editor 는 문장별로 다른 세션을 탈 수 있어(pgbouncer) temp 테이블 등
+--   세션 상태를 문장 간에 공유할 수 없다 — 가드는 반드시 단일 문장 안에서 완결할 것.
+--   (관리자가 FAQ 를 전부 삭제한 뒤 이 파일을 재실행하면 시드 10건이 다시 들어간다 —
+--    재실행은 설치/복구 목적일 때만 수행한다.)
 insert into public.faqs (category, question, answer, display_order)
 select v.category, v.question, v.answer, v.display_order
 from (values
@@ -79,7 +75,4 @@ from (values
   ('account', '개인정보는 어떻게 관리되나요?',
    '개인정보는 관련 법령에 따라 안전하게 관리됩니다. 자세한 내용은 마이페이지 > 약관 및 개인정보처리방침에서 확인하실 수 있습니다.', 2)
 ) as v(category, question, answer, display_order)
-where not (select existed from _faqs_preexisted)
-  and not exists (select 1 from public.faqs);  -- 방어적 이중 가드
-
-drop table if exists _faqs_preexisted;
+where not exists (select 1 from public.faqs);
