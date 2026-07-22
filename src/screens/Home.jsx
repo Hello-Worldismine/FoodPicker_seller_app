@@ -27,6 +27,7 @@ const NOTIF_TYPE_COLOR = {
   settlement:      { color: '#22A06B', bg: '#E9F8F1' },
   coupon_approved: { color: '#22A06B', bg: '#E9F8F1' },
   coupon_rejected: { color: '#E5484D', bg: '#FFF0F0' },
+  coupon_assigned: { color: '#FF8A3D', bg: '#FFF4ED' }, // 관리자 매장 지정 쿠폰 발급 요청
 };
 
 export default function HomeScreen() {

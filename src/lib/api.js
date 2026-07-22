@@ -294,6 +294,17 @@ export async function requestCoupon(d) {
   if (error) throw error;
   return mapCoupon(data);
 }
+// 관리자가 매장 지정 발급한 쿠폰(source='admin', pending) 수락/거절.
+// 수락 시 서버가 approved+활성화 처리 → 사용자 앱 상점 상세에 노출. 갱신된 쿠폰 반환.
+export async function respondCouponOffer(couponId, accept, reason = null) {
+  const { data, error } = await supabase.rpc('respond_coupon_offer', {
+    p_coupon_id: couponId,
+    p_accept: accept,
+    p_reason: reason,
+  });
+  if (error) throw error;
+  return mapCoupon(data);
+}
 
 // ───────── 변경 ─────────
 export async function insertProduct(store, data) {
