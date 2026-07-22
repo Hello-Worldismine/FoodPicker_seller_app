@@ -63,9 +63,9 @@ export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
           </TouchableOpacity>
         </View>
         <WebView
-          originWhitelist={['*']}
           source={{ html: HTML, baseUrl: 'https://postcode.map.daum.net' }}
           onMessage={handleMessage}
+          originWhitelist={['*']}
           javaScriptEnabled
           domStorageEnabled
           mixedContentMode="always"
