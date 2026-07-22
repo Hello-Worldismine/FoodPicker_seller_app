@@ -16,13 +16,18 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
 body { background: #fff; }
 </style>
 </head>
 <body>
-<script src="//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
+<script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <script>
-window.onload = function() {
+function initPostcode() {
+  if (!window.daum || !daum.Postcode) {
+    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ error: 'script_load_failed' }));
+    return;
+  }
   new daum.Postcode({
     oncomplete: function(data) {
       var address = data.roadAddress || data.address;
@@ -31,7 +36,8 @@ window.onload = function() {
     width: '100%',
     height: '100%',
   }).embed(document.body);
-};
+}
+window.onload = initPostcode;
 </script>
 </body>
 </html>`;
@@ -57,8 +63,13 @@ export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
           </TouchableOpacity>
         </View>
         <WebView
-          source={{ html: HTML }}
+          originWhitelist={['*']}
+          source={{ html: HTML, baseUrl: 'https://postcode.map.daum.net' }}
           onMessage={handleMessage}
+          javaScriptEnabled
+          domStorageEnabled
+          mixedContentMode="always"
+          setSupportMultipleWindows={false}
           startInLoadingState
           renderLoading={() => (
             <View className="flex-1 items-center justify-center">
