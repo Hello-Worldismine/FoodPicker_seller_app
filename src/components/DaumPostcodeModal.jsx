@@ -5,8 +5,8 @@ import {
   Text,
   TouchableOpacity,
   ActivityIndicator,
-  SafeAreaView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { X } from 'lucide-react-native';
 
@@ -16,13 +16,18 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
 body { background: #fff; }
 </style>
 </head>
 <body>
-<script src="//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
+<script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <script>
-window.onload = function() {
+function initPostcode() {
+  if (!window.daum || !daum.Postcode) {
+    setTimeout(initPostcode, 200);
+    return;
+  }
   new daum.Postcode({
     oncomplete: function(data) {
       var address = data.roadAddress || data.address;
@@ -31,12 +36,15 @@ window.onload = function() {
     width: '100%',
     height: '100%',
   }).embed(document.body);
-};
+}
+window.onload = initPostcode;
 </script>
 </body>
 </html>`;
 
 export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
+  const insets = useSafeAreaInsets();
+
   function handleMessage(event) {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -49,25 +57,30 @@ export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView className="flex-1 bg-white">
-        <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-100">
-          <Text className="text-lg font-bold text-charcoal">주소 검색</Text>
-          <TouchableOpacity onPress={onClose} className="p-1">
+      <View style={{ flex: 1, backgroundColor: '#fff', paddingTop: insets.top }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
+          <Text style={{ fontSize: 17, fontWeight: '700', color: '#1F2933' }}>주소 검색</Text>
+          <TouchableOpacity onPress={onClose} style={{ padding: 4 }}>
             <X color="#1F2933" size={22} />
           </TouchableOpacity>
         </View>
         <WebView
-          source={{ html: HTML }}
+          source={{ html: HTML, baseUrl: 'https://postcode.map.daum.net' }}
           onMessage={handleMessage}
+          originWhitelist={['*']}
+          javaScriptEnabled
+          domStorageEnabled
+          mixedContentMode="always"
+          setSupportMultipleWindows={false}
           startInLoadingState
           renderLoading={() => (
-            <View className="flex-1 items-center justify-center">
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
               <ActivityIndicator color="#22A06B" />
             </View>
           )}
           style={{ flex: 1 }}
         />
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }

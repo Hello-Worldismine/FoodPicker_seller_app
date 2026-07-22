@@ -9,7 +9,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useApp, ORDER_SELLER_STATUS, formatRelativeTime } from '../store/appStore';
-import { Plus, ClipboardList, AlertTriangle, Bell, X, Leaf, Package, TrendingUp } from 'lucide-react-native';
+import { Plus, ClipboardList, AlertTriangle, Bell, X } from 'lucide-react-native';
 
 function formatTime(isoString) {
   if (!isoString) return '';
@@ -40,20 +40,6 @@ export default function HomeScreen() {
   const pickupWaitCount = orders.filter(o => o.sellerStatus === 'confirmed').length;
   const completedCount = orders.filter(o => o.sellerStatus === 'completed').length;
   const unreadCount = notifications.filter(n => !n.read).length;
-
-  // 환경/비용 지표 계산
-  const completedOrders = orders.filter(o => o.sellerStatus === 'completed');
-  const savedWasteCost = completedOrders.reduce((sum, o) => {
-    const p = products.find(pr => pr.id === o.productId);
-    if (!p) return sum;
-    return sum + (p.originalPrice - p.salePrice) * o.quantity;
-  }, 0);
-
-  const totalInitialStock = products.reduce((sum, p) => sum + (p.stock || 0), 0);
-  const totalSold = completedOrders.reduce((sum, o) => sum + o.quantity, 0);
-  const clearanceRate = totalInitialStock + totalSold > 0
-    ? Math.round((totalSold / (totalInitialStock + totalSold)) * 100)
-    : 0;
 
   const recentOrders = orders
     .filter(o => o.sellerStatus === 'new' || o.sellerStatus === 'confirmed')
@@ -184,35 +170,6 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* 환경/비용 지표 */}
-          <View style={{ borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 12, gap: 10 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#E9F8F1', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 }}>
-              <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#22A06B', alignItems: 'center', justifyContent: 'center' }}>
-                <Leaf color="#fff" size={16} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, color: '#22A06B', fontWeight: '600', marginBottom: 1 }}>오늘 아낀 폐기 비용</Text>
-                <Text style={{ fontSize: 18, fontWeight: '800', color: '#1F2933' }}>
-                  {formatPrice(savedWasteCost)}
-                  <Text style={{ fontSize: 12, fontWeight: '400', color: '#22A06B' }}> 절약 🎉</Text>
-                </Text>
-              </View>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FFF4ED', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 }}>
-              <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#FF8A3D', alignItems: 'center', justifyContent: 'center' }}>
-                <TrendingUp color="#fff" size={16} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, color: '#FF8A3D', fontWeight: '600', marginBottom: 1 }}>오늘의 재고 소진율</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-                  <Text style={{ fontSize: 18, fontWeight: '800', color: '#1F2933' }}>{clearanceRate}%</Text>
-                  <View style={{ flex: 1, height: 6, backgroundColor: '#FFD6B3', borderRadius: 3, marginBottom: 2 }}>
-                    <View style={{ height: 6, borderRadius: 3, backgroundColor: '#FF8A3D', width: `${clearanceRate}%` }} />
-                  </View>
-                </View>
-              </View>
-            </View>
-          </View>
         </View>
 
         {/* Quick Action Buttons */}

@@ -237,7 +237,7 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
                   >
                     {bizCertFile ? (
                       <View className="items-center">
-                        <Image source={{ uri: bizCertFile }} className="w-full h-32 rounded-lg" resizeMode="cover" />
+                        <Image source={{ uri: bizCertFile }} style={{ width: '100%', height: 128, borderRadius: 8 }} resizeMode="cover" />
                         <Text className="text-primary text-xs mt-2">탭하여 다시 선택</Text>
                       </View>
                     ) : (
