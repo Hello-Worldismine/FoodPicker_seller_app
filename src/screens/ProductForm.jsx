@@ -48,6 +48,12 @@ const INTERVAL_PRESETS = [
   { label: '2시간', minutes: 120 },
   { label: '3시간', minutes: 180 },
 ];
+const PICKUP_DEADLINE_OPTIONS = [
+  { label: '30분',    minutes: 30 },
+  { label: '1시간',   minutes: 60 },
+  { label: '1시간 반', minutes: 90 },
+  { label: '2시간',   minutes: 120 },
+];
 
 function formatDate(date) {
   if (!date) return '';
@@ -134,11 +140,8 @@ export default function ProductFormScreen() {
   );
   const [storage, setStorage] = useState(editProduct?.storage?.replace(' 보관', '') || '냉장');
   const [storageDetail, setStorageDetail] = useState(editProduct?.storageDetail || '');
-  const [pickupStart, setPickupStart] = useState(
-    editProduct?.pickupStart ? formatTime(editProduct.pickupStart) : '18:00'
-  );
-  const [pickupEnd, setPickupEnd] = useState(
-    editProduct?.pickupEnd ? formatTime(editProduct.pickupEnd) : '20:00'
+  const [pickupDeadlineMinutes, setPickupDeadlineMinutes] = useState(
+    editProduct?.pickupDeadlineMinutes || 60
   );
   const [description, setDescription] = useState(editProduct?.description || '');
   const [composition, setComposition] = useState(editProduct?.composition || '');
@@ -164,21 +167,6 @@ export default function ProductFormScreen() {
   const reductionError = !!(reductionAmount && startPrice && floorPrice &&
     !startPriceError && !floorPriceError &&
     parseInt(reductionAmount) > (parseInt(startPrice) - parseInt(floorPrice)));
-
-  // 소비기한(날짜+시간)이 픽업 종료(오늘 날짜 기준 시각)보다 빠른 경우만 오류.
-  // 소비기한 날짜가 오늘보다 미래라면 시간 비교와 무관하게 항상 통과해야 한다.
-  const expiryTimeError = useMemo(() => {
-    if (!expiryDate || !expiryTime || !pickupEnd) return false;
-    const [ey, em, ed] = expiryDate.split('-').map(Number);
-    const [eh, emi] = expiryTime.split(':').map(Number);
-    const expiryDateTime = new Date(ey, em - 1, ed, eh, emi, 0);
-
-    const [ph, pm] = pickupEnd.split(':').map(Number);
-    const pickupEndDateTime = new Date();
-    pickupEndDateTime.setHours(ph, pm, 0, 0);
-
-    return expiryDateTime < pickupEndDateTime;
-  }, [expiryDate, expiryTime, pickupEnd]);
 
   const discountRate = originalPrice && startPrice && !startPriceError
     ? Math.round((1 - parseInt(startPrice) / parseInt(originalPrice)) * 100)
@@ -215,8 +203,6 @@ export default function ProductFormScreen() {
     let currentVal = new Date();
     if (target === 'expiryDate') currentVal = parseDateStr(expiryDate);
     if (target === 'expiryTime') currentVal = parseTimeToDate(expiryTime);
-    if (target === 'pickupStart') currentVal = parseTimeToDate(pickupStart);
-    if (target === 'pickupEnd') currentVal = parseTimeToDate(pickupEnd);
     setPickerValue(currentVal);
     setPickerTarget(target);
     setPickerMode(mode);
@@ -228,8 +214,6 @@ export default function ProductFormScreen() {
     if (!date) return;
     if (pickerTarget === 'expiryDate') setExpiryDate(formatDate(date));
     if (pickerTarget === 'expiryTime') setExpiryTime(formatTime(date));
-    if (pickerTarget === 'pickupStart') setPickupStart(formatTime(date));
-    if (pickerTarget === 'pickupEnd') setPickupEnd(formatTime(date));
   }
 
   async function pickImage() {
@@ -291,17 +275,11 @@ export default function ProductFormScreen() {
     if (startPriceError) { Alert.alert('오류', '시작가는 정상가보다 낮아야 합니다.'); return; }
     if (floorPriceError) { Alert.alert('오류', '하한가는 시작가보다 낮아야 합니다.'); return; }
     if (reductionError) { Alert.alert('오류', '회당 인하 금액은 (시작가 - 하한가)를 초과할 수 없습니다.'); return; }
-    if (expiryTimeError) { Alert.alert('오류', '소비기한은 픽업 종료 시간보다 빠를 수 없습니다.'); return; }
     if (!stock || isNaN(parseInt(stock))) { Alert.alert('오류', '판매 수량을 입력해주세요.'); return; }
 
     const [ey, em, ed] = expiryDate.split('-').map(Number);
     const [eth, etm] = expiryTime.split(':').map(Number);
     const expDate = new Date(ey, em - 1, ed, eth, etm, 0);
-
-    const [psh, psm] = pickupStart.split(':').map(Number);
-    const [peh, pem] = pickupEnd.split(':').map(Number);
-    const psDate = new Date(); psDate.setHours(psh, psm, 0, 0);
-    const peDate = new Date(); peDate.setHours(peh, pem, 0, 0);
 
     // 프리셋 목록 외 '기타 알레르기 직접 입력' 값도 병합(중복 제외).
     const extraAllergen = otherAllergen.trim();
@@ -327,8 +305,7 @@ export default function ProductFormScreen() {
       expiryDate: expDate.toISOString(),
       storage,
       storageDetail: storageDetail.trim(),
-      pickupStart: psDate.toISOString(),
-      pickupEnd: peDate.toISOString(),
+      pickupDeadlineMinutes,
       description: description.trim(),
       composition: composition.trim(),
       allergens: mergedAllergens,
@@ -622,15 +599,12 @@ export default function ProductFormScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => openPicker('expiryTime', 'time')}
-                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: expiryTimeError ? '#FFF0F0' : '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, borderWidth: expiryTimeError ? 1.5 : 0, borderColor: '#E5484D' }}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
               >
-                <Text style={{ fontSize: 15, color: expiryTimeError ? '#E5484D' : '#1F2933' }}>{expiryTime}</Text>
-                <Clock color={expiryTimeError ? '#E5484D' : '#9AA3AF'} size={15} />
+                <Text style={{ fontSize: 15, color: '#1F2933' }}>{expiryTime}</Text>
+                <Clock color="#9AA3AF" size={15} />
               </TouchableOpacity>
             </View>
-            {expiryTimeError && (
-              <Text style={{ fontSize: 12, color: '#E5484D', marginTop: 6 }}>소비기한은 픽업 종료 시간({pickupEnd})보다 빠를 수 없습니다.</Text>
-            )}
           </View>
 
           {/* 보관 방법 */}
@@ -663,30 +637,28 @@ export default function ProductFormScreen() {
             />
           </View>
 
-          {/* 픽업 가능 시간 */}
+          {/* 주문 후 픽업 마감 */}
           <View style={card}>
-            <Text style={cardTitle}>픽업 가능 시간 <Text style={{ color: '#E5484D' }}>*</Text></Text>
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={fieldLabel}>픽업 시작</Text>
+            <Text style={cardTitle}>주문 후 픽업 마감 <Text style={{ color: '#E5484D' }}>*</Text></Text>
+            <Text style={[fieldLabel, { marginBottom: 12 }]}>주문 후 몇 분 이내로 방문해야 하나요?</Text>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {PICKUP_DEADLINE_OPTIONS.map(({ label, minutes }) => (
                 <TouchableOpacity
-                  onPress={() => openPicker('pickupStart', 'time')}
-                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
+                  key={minutes}
+                  activeOpacity={1}
+                  onPress={() => setPickupDeadlineMinutes(minutes)}
+                  style={{
+                    flex: 1, alignItems: 'center', justifyContent: 'center',
+                    paddingVertical: 12, borderRadius: 10, borderWidth: 1,
+                    backgroundColor: pickupDeadlineMinutes === minutes ? '#22A06B' : '#fff',
+                    borderColor: pickupDeadlineMinutes === minutes ? '#22A06B' : '#E5E7EB',
+                  }}
                 >
-                  <Text style={{ fontSize: 15, color: '#1F2933' }}>{pickupStart}</Text>
-                  <Clock color="#9AA3AF" size={15} />
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: pickupDeadlineMinutes === minutes ? '#fff' : '#6B7280' }}>
+                    {label}
+                  </Text>
                 </TouchableOpacity>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={fieldLabel}>픽업 종료</Text>
-                <TouchableOpacity
-                  onPress={() => openPicker('pickupEnd', 'time')}
-                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
-                >
-                  <Text style={{ fontSize: 15, color: '#1F2933' }}>{pickupEnd}</Text>
-                  <Clock color="#9AA3AF" size={15} />
-                </TouchableOpacity>
-              </View>
+              ))}
             </View>
           </View>
 
