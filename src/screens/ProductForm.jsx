@@ -10,6 +10,7 @@ import {
   Modal,
   Image,
   Alert,
+  ActivityIndicator,
   Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -158,6 +159,7 @@ export default function ProductFormScreen() {
 
   const [showIntervalDropdown, setShowIntervalDropdown] = useState(false);
   const [intervalDropdownPos, setIntervalDropdownPos] = useState({ top: 0 });
+  const [submitting, setSubmitting] = useState(false);
 
   // 가격 유효성 검사
   const startPriceError = !!(startPrice && originalPrice &&
@@ -266,7 +268,7 @@ export default function ProductFormScreen() {
 
   // 등록/수정: addProduct/updateProduct → api(insertProduct/updateProductData) → Supabase.
   // 이미지는 api 계층의 uploadImages가 로컬 URI를 Storage에 업로드 후 public URL로 치환한다.
-  function validateAndSubmit() {
+  async function validateAndSubmit() {
     if (!name.trim()) { Alert.alert('오류', '상품명을 입력해주세요.'); return; }
     if (!category) { Alert.alert('오류', '카테고리를 선택해주세요.'); return; }
     if (!originalPrice || isNaN(parseInt(originalPrice))) { Alert.alert('오류', '정상가를 입력해주세요.'); return; }
@@ -314,12 +316,19 @@ export default function ProductFormScreen() {
       cancelPolicy: cancelPolicy.trim(),
     };
 
-    if (isEdit) {
-      updateProduct(productId, productData);
-      Alert.alert('완료', '상품이 수정되었습니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
-    } else {
-      addProduct(productData);
-      Alert.alert('등록 완료', '상품이 등록되어 즉시 판매가 시작됩니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
+    setSubmitting(true);
+    try {
+      if (isEdit) {
+        await updateProduct(productId, productData);
+        Alert.alert('완료', '상품이 수정되었습니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
+      } else {
+        await addProduct(productData);
+        Alert.alert('등록 완료', '상품이 등록되어 즉시 판매가 시작됩니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
+      }
+    } catch (e) {
+      Alert.alert('오류', e.message || '상품 저장 중 오류가 발생했습니다.');
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -764,11 +773,13 @@ export default function ProductFormScreen() {
         <View style={{ backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingHorizontal: 16, paddingTop: 12, paddingBottom: insets.bottom + 12 }}>
           <TouchableOpacity
             activeOpacity={0.85}
-            style={{ backgroundColor: '#22A06B', borderRadius: 14, paddingVertical: 16, alignItems: 'center' }}
+            disabled={submitting}
+            style={{ backgroundColor: submitting ? '#A7D9C4' : '#22A06B', borderRadius: 14, paddingVertical: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
             onPress={validateAndSubmit}
           >
+            {submitting && <ActivityIndicator color="#fff" size="small" />}
             <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>
-              {isEdit ? '수정 완료' : '상품 등록하기'}
+              {submitting ? '저장 중…' : isEdit ? '수정 완료' : '상품 등록하기'}
             </Text>
           </TouchableOpacity>
         </View>

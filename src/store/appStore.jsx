@@ -227,13 +227,13 @@ export function AppProvider({ children }) {
   // reduce_product_prices, 5분 주기)가 단독 처리한다. 클라이언트 중복 실행 금지(API_SPEC §9/§12).
 
   const addProduct = async (product) => {
-    try { await api.insertProduct(storeInfo, product); await reloadProducts(); }
-    catch (e) { console.warn('[상품 등록]', e.message); }
+    await api.insertProduct(storeInfo, product);
+    await reloadProducts();
   };
 
   const updateProduct = async (id, data) => {
-    try { await api.updateProductData(id, data); await reloadProducts(); }
-    catch (e) { console.warn('[상품 수정]', e.message); }
+    await api.updateProductData(id, data);
+    await reloadProducts();
   };
 
   const deleteProduct = async (id) => {
