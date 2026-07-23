@@ -205,7 +205,7 @@ export function storeToDb(patch) {
 
 // ───────── 조회 ─────────
 export async function fetchStore() {
-  const { data, error } = await supabase.from('stores').select('*').maybeSingle();
+  const { data, error } = await supabase.from('stores').select('*').limit(1).maybeSingle();
   if (error) throw error;
   return mapStore(data);
 }
