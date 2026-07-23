@@ -5,7 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, ActivityIndicator } from 'react-native';
+import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
 
 import { AppProvider, useApp } from './src/store/appStore';
 import { AuthProvider, useAuth } from './src/store/authStore';
@@ -32,6 +32,8 @@ import {
   ClipboardList,
   BarChart2,
   Store,
+  Clock,
+  LogOut,
 } from 'lucide-react-native';
 
 const Stack = createNativeStackNavigator();
@@ -168,6 +170,41 @@ function AuthNavigator() {
   );
 }
 
+// 입점 심사 중 화면
+function PendingApprovalScreen() {
+  const { signOut } = useAuth();
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={{ flex: 1, backgroundColor: '#fff', paddingTop: insets.top, paddingBottom: insets.bottom + 20 }}>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
+        <View style={{ width: 96, height: 96, borderRadius: 48, backgroundColor: '#FFF8ED', alignItems: 'center', justifyContent: 'center', marginBottom: 28 }}>
+          <Clock color="#FF8A3D" size={46} />
+        </View>
+        <Text style={{ fontSize: 24, fontWeight: '800', color: '#1F2933', textAlign: 'center', lineHeight: 32, marginBottom: 14 }}>
+          입점 심사 중입니다
+        </Text>
+        <Text style={{ fontSize: 15, color: '#6B7280', textAlign: 'center', lineHeight: 24, marginBottom: 6 }}>
+          제출하신 정보를 검토하고 있습니다.{'\n'}약 1~2일 내 검토 후 서비스가{'\n'}자동으로 활성화됩니다.
+        </Text>
+        <View style={{ marginTop: 20, backgroundColor: '#F5F6F7', borderRadius: 12, paddingHorizontal: 20, paddingVertical: 14 }}>
+          <Text style={{ fontSize: 12, color: '#9AA3AF', textAlign: 'center', lineHeight: 18 }}>
+            승인 완료 시 앱이 자동으로 전환됩니다.{'\n'}앱을 계속 열어두실 필요는 없습니다.
+          </Text>
+        </View>
+      </View>
+      <View style={{ paddingHorizontal: 20 }}>
+        <TouchableOpacity
+          onPress={signOut}
+          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 14, gap: 6 }}
+        >
+          <LogOut color="#C4C9D0" size={16} />
+          <Text style={{ color: '#9AA3AF', fontSize: 14 }}>다른 계정으로 로그인</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 // 세션 유무에 따라 인증 화면 / 앱 본체를 분기
 function Gate() {
   const { session, loading: authLoading } = useAuth();
@@ -183,6 +220,8 @@ function Gate() {
   if (dataLoading) return splash;
   // 로딩이 끝났는데 매장이 없으면(가입 직후 미프로비저닝) 온보딩으로 유도 — 무한 스플래시 방지
   if (!storeInfo) return <OnboardingScreen />;
+  // 입점 신청 후 관리자 심사 중(approved 아닌 상태)이면 대기 화면
+  if (storeInfo.approvalStatus !== 'approved') return <PendingApprovalScreen />;
   return <RootNavigator />;
 }
 
