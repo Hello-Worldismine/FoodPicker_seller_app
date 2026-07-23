@@ -621,12 +621,32 @@ export default function OnboardingScreen() {
         borderTopWidth: 1,
         borderTopColor: '#F3F4F6',
         backgroundColor: '#fff',
+        flexDirection: 'row',
+        gap: 10,
       }}>
+        {step > 1 && (
+          <TouchableOpacity
+            onPress={() => setStep(s => s - 1)}
+            activeOpacity={0.75}
+            style={{
+              borderRadius: 14,
+              paddingVertical: 17,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: 1.5,
+              borderColor: '#E5E7EB',
+              width: 88,
+            }}
+          >
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#6B7280' }}>이전</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           onPress={isLastStep ? handleSubmit : () => setStep(s => s + 1)}
           disabled={!nextEnabled}
           activeOpacity={0.85}
           style={{
+            flex: 1,
             borderRadius: 14,
             paddingVertical: 17,
             alignItems: 'center',
