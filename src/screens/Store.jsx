@@ -236,10 +236,10 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
                     style={{ backgroundColor: '#FFF8F4' }}
                   >
                     {bizCertFile ? (
-                      <View className="items-center">
-                        <Image source={{ uri: bizCertFile }} style={{ width: '100%', height: 128, borderRadius: 8 }} resizeMode="cover" />
+                      <>
+                        <Image source={{ uri: bizCertFile }} style={{ alignSelf: 'stretch', height: 160, borderRadius: 8 }} resizeMode="contain" />
                         <Text className="text-primary text-xs mt-2">탭하여 다시 선택</Text>
-                      </View>
+                      </>
                     ) : (
                       <View className="items-center">
                         <Camera color="#FF8A3D" size={24} />
