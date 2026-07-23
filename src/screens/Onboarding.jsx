@@ -17,15 +17,16 @@ import DaumPostcodeModal from '../components/DaumPostcodeModal';
 const CATEGORIES = ['한식', '일식', '중식', '양식', '분식', '카페/베이커리', '패스트푸드', '기타'];
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DAY_LABELS = { mon: '월', tue: '화', wed: '수', thu: '목', fri: '금', sat: '토', sun: '일' };
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 
 const STEP_META = {
   1: { title: '매장 기본 정보', sub: '매장명, 연락처, 카테고리를 설정해주세요' },
-  2: { title: '매장 소개', sub: '고객에게 보여줄 사진과 소개글을 등록해주세요' },
-  3: { title: '영업 시간', sub: '운영하는 요일과 시간을 설정해주세요' },
-  4: { title: '사업자 정보', sub: '대표자 및 사업자 정보를 입력해주세요' },
-  5: { title: '매장 주소', sub: '고객이 방문할 매장 위치를 입력해주세요' },
-  6: { title: '정산 계좌', sub: '판매 수익을 정산받을 계좌를 입력해주세요' },
+  2: { title: '매장 대표 사진', sub: '고객에게 보여줄 매장 사진을 등록해주세요' },
+  3: { title: '매장 소개', sub: '고객에게 전달하고 싶은 소개글을 입력해주세요' },
+  4: { title: '영업 시간', sub: '운영하는 요일과 시간을 설정해주세요' },
+  5: { title: '사업자 정보', sub: '대표자 및 사업자 정보를 입력해주세요' },
+  6: { title: '매장 주소', sub: '고객이 방문할 매장 위치를 입력해주세요' },
+  7: { title: '정산 계좌', sub: '판매 수익을 정산받을 계좌를 입력해주세요' },
 };
 
 function parseTimeToDate(t) {
@@ -72,17 +73,17 @@ export default function OnboardingScreen() {
   const [phone, setPhone] = useState(user?.user_metadata?.phone || '');
   const [category, setCategory] = useState('');
 
-  // Step 2
+  // Step 2: 매장 대표 사진 / Step 3: 매장 소개
   const [storeImage, setStoreImage] = useState(null);
   const [description, setDescription] = useState('');
 
-  // Step 3
+  // Step 4: 영업 시간
   const [days, setDays] = useState(defaultDays);
   const [timePicker, setTimePicker] = useState(null);
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [timePickerValue, setTimePickerValue] = useState(new Date());
 
-  // Step 4
+  // Step 5: 사업자 정보
   const [ownerName, setOwnerName] = useState(user?.user_metadata?.owner_name || '');
   const [bizNumber, setBizNumber] = useState('');
   const [bizCertFile, setBizCertFile] = useState(null);
@@ -90,11 +91,11 @@ export default function OnboardingScreen() {
   const [residentBack, setResidentBack] = useState('');
   const residentBackRef = useRef(null);
 
-  // Step 5
+  // Step 6: 매장 주소
   const [address, setAddress] = useState('');
   const [showPostcode, setShowPostcode] = useState(false);
 
-  // Step 6
+  // Step 7: 정산 계좌
   const [bankName, setBankName] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
   const [accountHolder, setAccountHolder] = useState('');
@@ -103,9 +104,10 @@ export default function OnboardingScreen() {
     if (step === 1) return name.trim().length > 0 && phone.trim().length > 0 && category.length > 0;
     if (step === 2) return true;
     if (step === 3) return true;
-    if (step === 4) return ownerName.trim().length > 0 && bizNumber.replace(/\D/g, '').length >= 10;
-    if (step === 5) return address.trim().length > 0;
-    if (step === 6) return !!(bankName.trim() && accountNumber.trim() && accountHolder.trim());
+    if (step === 4) return true;
+    if (step === 5) return ownerName.trim().length > 0 && bizNumber.replace(/\D/g, '').length >= 10;
+    if (step === 6) return address.trim().length > 0;
+    if (step === 7) return !!(bankName.trim() && accountNumber.trim() && accountHolder.trim());
     return true;
   };
 
@@ -278,53 +280,81 @@ export default function OnboardingScreen() {
         </View>
       );
 
-      // Step 2: 매장 소개
+      // Step 2: 매장 대표 사진
       case 2: return (
-        <View style={{ gap: 20 }}>
-          <View>
-            <Text style={S.label}>매장 대표 사진</Text>
-            <TouchableOpacity
-              onPress={() => pickImage(setStoreImage)}
-              style={{
-                height: 200, borderRadius: 16, overflow: 'hidden',
-                backgroundColor: '#F5F6F7', alignItems: 'center', justifyContent: 'center',
-                borderWidth: storeImage ? 0 : 2, borderStyle: 'dashed', borderColor: '#D1D5DB',
-              }}
-            >
-              {storeImage ? (
-                <>
-                  <Image source={{ uri: storeImage }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                  <View style={{ position: 'absolute', bottom: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 }}>
-                    <Text style={{ color: '#fff', fontSize: 12 }}>변경</Text>
-                  </View>
-                </>
-              ) : (
-                <View style={{ alignItems: 'center', gap: 10 }}>
-                  <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center' }}>
-                    <Camera color="#9AA3AF" size={26} />
-                  </View>
-                  <Text style={{ color: '#9AA3AF', fontSize: 14 }}>사진을 선택해주세요</Text>
+        <View>
+          <TouchableOpacity
+            onPress={() => pickImage(setStoreImage)}
+            style={{
+              height: 260, borderRadius: 20, overflow: 'hidden',
+              backgroundColor: '#F5F6F7', alignItems: 'center', justifyContent: 'center',
+              borderWidth: storeImage ? 0 : 2, borderStyle: 'dashed', borderColor: '#D1D5DB',
+            }}
+          >
+            {storeImage ? (
+              <>
+                <Image source={{ uri: storeImage }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                <View style={{ position: 'absolute', bottom: 14, right: 14, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Camera color="#fff" size={14} />
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>사진 변경</Text>
                 </View>
-              )}
-            </TouchableOpacity>
-          </View>
-          <View>
-            <Text style={S.label}>매장 소개</Text>
-            <TextInput
-              style={{ ...S.input, height: 110, textAlignVertical: 'top', paddingTop: 14 }}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="고객에게 전달하고 싶은 매장 소개글을 입력해주세요"
-              placeholderTextColor="#C4C9D0"
-              multiline
-              numberOfLines={4}
-            />
-          </View>
+              </>
+            ) : (
+              <View style={{ alignItems: 'center', gap: 14 }}>
+                <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#E9E9E9', alignItems: 'center', justifyContent: 'center' }}>
+                  <Camera color="#9AA3AF" size={34} />
+                </View>
+                <Text style={{ color: '#6B7280', fontSize: 15, fontWeight: '600' }}>탭하여 사진 선택</Text>
+                <Text style={{ color: '#C4C9D0', fontSize: 13 }}>정방형 비율 권장</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          {storeImage ? (
+            <View style={{ marginTop: 16, backgroundColor: '#E9F8F1', borderRadius: 14, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: '#22A06B', alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>✓</Text>
+              </View>
+              <Text style={{ color: '#22A06B', fontSize: 14, fontWeight: '600' }}>사진이 등록되었습니다</Text>
+            </View>
+          ) : (
+            <Text style={{ color: '#C4C9D0', fontSize: 13, textAlign: 'center', marginTop: 18 }}>
+              사진은 선택 사항입니다 · 나중에 변경할 수 있어요
+            </Text>
+          )}
         </View>
       );
 
-      // Step 3: 영업 시간
+      // Step 3: 매장 소개
       case 3: return (
+        <View style={{ gap: 10 }}>
+          <TextInput
+            style={{
+              ...S.input,
+              height: 220,
+              textAlignVertical: 'top',
+              paddingTop: 16,
+              fontSize: 15,
+              lineHeight: 24,
+            }}
+            value={description}
+            onChangeText={setDescription}
+            placeholder={`예: 신선한 재료만을 사용해 매일 직접 만드는 건강 샐러드 가게입니다.\n\n유기농 채소와 제철 식재료로 만든 메뉴를 합리적인 가격에 즐기실 수 있어요.`}
+            placeholderTextColor="#C4C9D0"
+            multiline
+            numberOfLines={8}
+            autoFocus
+          />
+          <Text style={{ color: '#C4C9D0', fontSize: 12, textAlign: 'right' }}>
+            {description.length}자
+          </Text>
+          <Text style={{ color: '#9AA3AF', fontSize: 13, lineHeight: 20 }}>
+            소개글은 선택 사항입니다. 나중에 매장 관리에서 언제든 수정할 수 있어요.
+          </Text>
+        </View>
+      );
+
+      // Step 4: 영업 시간
+      case 4: return (
         <View style={{ backgroundColor: '#fff', borderRadius: 16 }}>
           {DAY_KEYS.map((key, idx) => {
             const day = days[key];
@@ -372,8 +402,8 @@ export default function OnboardingScreen() {
         </View>
       );
 
-      // Step 4: 사업자 정보
-      case 4: return (
+      // Step 5: 사업자 정보
+      case 5: return (
         <View style={{ gap: 20 }}>
           <View>
             <Text style={S.label}>대표자명 *</Text>
@@ -458,8 +488,8 @@ export default function OnboardingScreen() {
         </View>
       );
 
-      // Step 5: 매장 주소
-      case 5: return (
+      // Step 6: 매장 주소
+      case 6: return (
         <View style={{ gap: 16 }}>
           <TouchableOpacity
             onPress={() => setShowPostcode(true)}
@@ -496,8 +526,8 @@ export default function OnboardingScreen() {
         </View>
       );
 
-      // Step 6: 정산 계좌
-      case 6: return (
+      // Step 7: 정산 계좌
+      case 7: return (
         <View style={{ gap: 20 }}>
           <View style={{ backgroundColor: '#FFF8ED', borderRadius: 12, padding: 14 }}>
             <Text style={{ fontSize: 12, color: '#B45309', lineHeight: 18 }}>
