@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
   Image, Platform, Modal, Alert, ActivityIndicator, Switch,
@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
-import { Camera, ChevronLeft, MapPin, LogOut, Store as StoreIcon } from 'lucide-react-native';
+import { Camera, ChevronLeft, MapPin, LogOut, Store as StoreIcon, Clock } from 'lucide-react-native';
 import { useApp } from '../store/appStore';
 import { useAuth } from '../store/authStore';
 import * as api from '../lib/api';
@@ -65,6 +65,7 @@ export default function OnboardingScreen() {
 
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [showPendingModal, setShowPendingModal] = useState(false);
 
   // Step 1
   const [name, setName] = useState(user?.user_metadata?.store_name || '');
@@ -87,6 +88,7 @@ export default function OnboardingScreen() {
   const [bizCertFile, setBizCertFile] = useState(null);
   const [residentFront, setResidentFront] = useState('');
   const [residentBack, setResidentBack] = useState('');
+  const residentBackRef = useRef(null);
 
   // Step 5
   const [address, setAddress] = useState('');
@@ -99,9 +101,11 @@ export default function OnboardingScreen() {
 
   const canGoNext = () => {
     if (step === 1) return name.trim().length > 0 && phone.trim().length > 0 && category.length > 0;
+    if (step === 2) return true;
+    if (step === 3) return true;
     if (step === 4) return ownerName.trim().length > 0 && bizNumber.replace(/\D/g, '').length >= 10;
     if (step === 5) return address.trim().length > 0;
-    if (step === 6) return bankName.trim() && accountNumber.trim() && accountHolder.trim();
+    if (step === 6) return !!(bankName.trim() && accountNumber.trim() && accountHolder.trim());
     return true;
   };
 
@@ -164,9 +168,10 @@ export default function OnboardingScreen() {
         tags: [],
       }));
 
-      await reload();
+      setShowPendingModal(true);
     } catch (e) {
       Alert.alert('오류', e.message || '등록 중 오류가 발생했습니다.');
+    } finally {
       setSubmitting(false);
     }
   }
@@ -199,7 +204,7 @@ export default function OnboardingScreen() {
             매장 정보를{'\n'}입력해볼게요
           </Text>
           <Text style={{ fontSize: 15, color: '#6B7280', textAlign: 'center', lineHeight: 24 }}>
-            고객에게 보여줄 매장 정보를{'\n'}순서대로 입력하면 바로 판매를{'\n'}시작할 수 있어요.
+            고객에게 보여줄 매장 정보를{'\n'}순서대로 입력하면 입점 신청을{'\n'}완료할 수 있어요.
           </Text>
         </View>
         <View style={{ paddingHorizontal: 20, gap: 10 }}>
@@ -422,14 +427,22 @@ export default function OnboardingScreen() {
               <TextInput
                 style={{ ...S.input, flex: 1 }}
                 value={residentFront}
-                onChangeText={t => setResidentFront(t.replace(/\D/g, '').slice(0, 6))}
+                onChangeText={t => {
+                  const digits = t.replace(/\D/g, '').slice(0, 6);
+                  setResidentFront(digits);
+                  if (digits.length === 6) {
+                    residentBackRef.current?.focus();
+                  }
+                }}
                 placeholder="앞 6자리"
                 placeholderTextColor="#C4C9D0"
                 keyboardType="numeric"
                 maxLength={6}
+                returnKeyType="next"
               />
               <Text style={{ color: '#9AA3AF', fontSize: 18 }}>-</Text>
               <TextInput
+                ref={residentBackRef}
                 style={{ ...S.input, width: 52 }}
                 value={residentBack}
                 onChangeText={t => setResidentBack(t.replace(/\D/g, '').slice(0, 1))}
@@ -532,6 +545,7 @@ export default function OnboardingScreen() {
   const meta = STEP_META[step] || {};
   const isLastStep = step === TOTAL_STEPS;
   const progressPct = `${Math.round((step / TOTAL_STEPS) * 100)}%`;
+  const nextEnabled = canGoNext() && !submitting;
 
   return (
     <KeyboardAvoidingView
@@ -540,7 +554,6 @@ export default function OnboardingScreen() {
     >
       {/* Header */}
       <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 20, paddingBottom: 8 }}>
-        {/* Back + progress bar */}
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
           <TouchableOpacity
             onPress={() => step > 1 && setStep(s => s - 1)}
@@ -556,7 +569,6 @@ export default function OnboardingScreen() {
             {step}/{TOTAL_STEPS}
           </Text>
         </View>
-        {/* Title */}
         <Text style={{ fontSize: 26, fontWeight: '800', color: '#1F2933', lineHeight: 34 }}>{meta.title}</Text>
         <Text style={{ fontSize: 14, color: '#9AA3AF', marginTop: 6, lineHeight: 20 }}>{meta.sub}</Text>
       </View>
@@ -582,7 +594,8 @@ export default function OnboardingScreen() {
       }}>
         <TouchableOpacity
           onPress={isLastStep ? handleSubmit : () => setStep(s => s + 1)}
-          disabled={!canGoNext() || submitting}
+          disabled={!nextEnabled}
+          activeOpacity={0.85}
           style={{
             borderRadius: 14,
             paddingVertical: 17,
@@ -590,26 +603,49 @@ export default function OnboardingScreen() {
             justifyContent: 'center',
             flexDirection: 'row',
             gap: 8,
-            backgroundColor: canGoNext() && !submitting ? '#22A06B' : '#E5E7EB',
+            backgroundColor: nextEnabled ? '#22A06B' : '#E5E7EB',
           }}
         >
           {submitting && <ActivityIndicator color="#fff" size="small" />}
           <Text style={{
             fontSize: 17,
             fontWeight: '800',
-            color: canGoNext() && !submitting ? '#fff' : '#9AA3AF',
+            color: nextEnabled ? '#fff' : '#9AA3AF',
           }}>
-            {submitting ? '등록 중…' : isLastStep ? '판매 시작하기 🎉' : '다음'}
+            {submitting ? '신청 중…' : isLastStep ? '입점 신청하기' : '다음'}
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Daum 주소 검색 modal */}
+      {/* Daum 주소 검색 */}
       <DaumPostcodeModal
         visible={showPostcode}
         onClose={() => setShowPostcode(false)}
         onSelect={addr => { setAddress(addr); setShowPostcode(false); }}
       />
+
+      {/* 입점 신청 완료 모달 */}
+      <Modal visible={showPendingModal} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 20, padding: 28, width: '100%', alignItems: 'center' }}>
+            <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: '#FFF8ED', alignItems: 'center', justifyContent: 'center', marginBottom: 18 }}>
+              <Clock color="#FF8A3D" size={30} />
+            </View>
+            <Text style={{ fontSize: 20, fontWeight: '800', color: '#1F2933', marginBottom: 10, textAlign: 'center' }}>
+              입점 신청이 완료되었습니다
+            </Text>
+            <Text style={{ fontSize: 14, color: '#6B7280', textAlign: 'center', lineHeight: 22, marginBottom: 24 }}>
+              입점 검토까지 약 1~2일이 소요됩니다.{'\n'}승인 완료 시 모든 서비스를 이용하실 수 있습니다.
+            </Text>
+            <TouchableOpacity
+              onPress={() => reload()}
+              style={{ backgroundColor: '#22A06B', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 40, width: '100%', alignItems: 'center' }}
+            >
+              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>확인</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Time picker */}
       {timePickerVisible && (
