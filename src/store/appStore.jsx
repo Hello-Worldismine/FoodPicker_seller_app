@@ -105,6 +105,7 @@ export function AppProvider({ children }) {
   const [notifications, setNotifications] = useState([]);
   const [notices, setNotices] = useState([]);
   const [loading, setLoading] = useState(true);
+  const prevUidRef = React.useRef(null);
 
   const reloadProducts = useCallback(async () => {
     setProducts((await api.fetchProducts()).map(withBadges));
@@ -145,9 +146,21 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     if (user) {
+      // 계정이 바뀌었으면(토큰 갱신이 아닌 실제 유저 전환) 이전 유저 데이터를 즉시 비운다.
+      if (prevUidRef.current !== user.id) {
+        setStoreInfoState(null);
+        setProducts([]);
+        setOrders([]);
+        setSettlements([]);
+        setReviews([]);
+        setNotifications([]);
+        setNotices([]);
+      }
+      prevUidRef.current = user.id;
       setLoading(true);
       loadAll();
     } else {
+      prevUidRef.current = null;
       setStoreInfoState(null);
       setProducts([]);
       setOrders([]);
