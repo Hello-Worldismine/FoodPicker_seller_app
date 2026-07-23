@@ -105,6 +105,7 @@ export function AppProvider({ children }) {
   const [notifications, setNotifications] = useState([]);
   const [notices, setNotices] = useState([]);
   const [loading, setLoading] = useState(true);
+  const prevUidRef = React.useRef(null);
 
   const reloadProducts = useCallback(async () => {
     setProducts((await api.fetchProducts()).map(withBadges));
@@ -118,7 +119,7 @@ export function AppProvider({ children }) {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, p, o, st, r, n, nc] = await Promise.all([
+      const [s, p, o, st, r, n, nc] = await Promise.allSettled([
         api.fetchStore(),
         api.fetchProducts(),
         api.fetchOrders(),
@@ -127,13 +128,15 @@ export function AppProvider({ children }) {
         api.fetchNotifications(),
         api.fetchNotices(),
       ]);
-      setStoreInfoState(s);
-      setProducts(p.map(withBadges));
-      setOrders(o);
-      setSettlements(st);
-      setReviews(r);
-      setNotifications(n);
-      setNotices(nc);
+      // 스토어는 Gate 분기의 핵심 — 실패해도 null로 명시 설정(다음 로드 시 재시도 가능)
+      if (s.status === 'fulfilled') setStoreInfoState(s.value);
+      else console.warn('[appStore] fetchStore 실패:', s.reason?.message);
+      if (p.status === 'fulfilled') setProducts(p.value.map(withBadges));
+      if (o.status === 'fulfilled') setOrders(o.value);
+      if (st.status === 'fulfilled') setSettlements(st.value);
+      if (r.status === 'fulfilled') setReviews(r.value);
+      if (n.status === 'fulfilled') setNotifications(n.value);
+      if (nc.status === 'fulfilled') setNotices(nc.value);
     } catch (e) {
       console.warn('[appStore] 데이터 로드 실패:', e.message);
     } finally {
@@ -143,9 +146,21 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     if (user) {
+      // 계정이 바뀌었으면(토큰 갱신이 아닌 실제 유저 전환) 이전 유저 데이터를 즉시 비운다.
+      if (prevUidRef.current !== user.id) {
+        setStoreInfoState(null);
+        setProducts([]);
+        setOrders([]);
+        setSettlements([]);
+        setReviews([]);
+        setNotifications([]);
+        setNotices([]);
+      }
+      prevUidRef.current = user.id;
       setLoading(true);
       loadAll();
     } else {
+      prevUidRef.current = null;
       setStoreInfoState(null);
       setProducts([]);
       setOrders([]);

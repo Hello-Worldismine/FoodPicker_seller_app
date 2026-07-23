@@ -61,8 +61,7 @@ export function mapProduct(r) {
     lastReducedAt: r.last_reduced_at,
     createdAt: r.created_at,
     stock: r.stock,
-    pickupStart: r.pickup_start,
-    pickupEnd: r.pickup_end,
+    pickupDeadlineMinutes: r.pickup_deadline_minutes ?? null,
     expiryDate: r.expiry_date,
     storage: r.storage,
     storageDetail: r.storage_detail,
@@ -197,8 +196,7 @@ function productToDb(d) {
     reduction_amount: d.reductionAmount ?? null,
     interval_minutes: d.intervalMinutes ?? null,
     stock: d.stock,
-    pickup_start: d.pickupStart,
-    pickup_end: d.pickupEnd,
+    pickup_deadline_minutes: d.pickupDeadlineMinutes ?? null,
     expiry_date: d.expiryDate,
     storage: d.storage,
     storage_detail: d.storageDetail,
@@ -229,7 +227,13 @@ export function storeToDb(patch) {
 
 // ───────── 조회 ─────────
 export async function fetchStore() {
-  const { data, error } = await supabase.from('stores').select('*').maybeSingle();
+  const uid = await currentUid();
+  if (!uid) return null;
+  const { data, error } = await supabase
+    .from('stores')
+    .select('*')
+    .eq('seller_id', uid)
+    .maybeSingle();
   if (error) throw error;
   return mapStore(data);
 }
