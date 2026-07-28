@@ -128,10 +128,10 @@ export default function OrderDetailScreen() {
           </View>
           <View className="flex-row items-center gap-3">
             <View className="w-14 h-14 bg-softgray rounded-xl items-center justify-center overflow-hidden">
-              {product?.thumbnail ? (
-                <Image source={{ uri: product.thumbnail }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+              {order.productThumbnail ? (
+                <Image source={{ uri: order.productThumbnail }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
               ) : (
-                <Text className="text-3xl">{product?.emoji || '🛍️'}</Text>
+                <Text className="text-3xl">{order.productEmoji || product?.emoji || '🛍️'}</Text>
               )}
             </View>
             <View className="flex-1">

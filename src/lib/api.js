@@ -86,6 +86,8 @@ export function mapOrder(r) {
     id: r.order_code, // 화면 표시용 주문번호(FP-####)
     productId: r.product_id,
     productName: r.product_name,
+    productThumbnail: r.products?.thumbnail || null,
+    productEmoji: r.products?.emoji || null,
     quantity: r.quantity,
     store: r.store_name,
     storeAddress: r.store_address,
@@ -225,7 +227,10 @@ export async function fetchProducts() {
   return (data || []).map(mapProduct);
 }
 export async function fetchOrders() {
-  const { data, error } = await supabase.from('orders').select('*').order('ordered_at', { ascending: false });
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*, products(thumbnail, emoji)')
+    .order('ordered_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapOrder);
 }
