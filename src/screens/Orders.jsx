@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,17 +7,13 @@ import {
   Modal,
   Linking,
   Alert,
+  StyleSheet,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import {
-  useApp,
-  ORDER_SELLER_STATUS,
-  formatPickupDeadline,
-  formatDeadlineDuration,
-  pickupErrorMessage,
-} from '../store/appStore';
-import { CheckCircle, Clock, Package, User, AlertTriangle, Phone, QrCode } from 'lucide-react-native';
+import { useApp, ORDER_SELLER_STATUS } from '../store/appStore';
+import { CheckCircle, Clock, Package, User, AlertTriangle, Phone, QrCode, X } from 'lucide-react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 
 function callSafeNumber(number) {
   if (!number) return;
@@ -48,6 +44,15 @@ function formatDateTime(iso) {
   return `${mo}/${da} ${hh}:${mm}`;
 }
 
+function formatPickupRange(start, end) {
+  if (!start) return '';
+  const fmt = iso => {
+    const d = new Date(iso);
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  };
+  return `픽업 ${fmt(start)}~${fmt(end)}`;
+}
+
 function formatPrice(n) {
   return n.toLocaleString('ko-KR') + '원';
 }
@@ -60,38 +65,53 @@ export default function OrdersScreen() {
   const [activeTab, setActiveTab] = useState('new');
   const [pickupModal, setPickupModal] = useState(null);
   const [cancelModal, setCancelModal] = useState(null);
+  const [qrScanVisible, setQrScanVisible] = useState(false);
+  const [qrScanned, setQrScanned] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+
+  function openQrScanner() {
+    if (!cameraPermission?.granted) {
+      requestCameraPermission().then(result => {
+        if (result.granted) setQrScanVisible(true);
+        else Alert.alert('권한 필요', '카메라 권한이 필요합니다. 설정에서 허용해주세요.');
+      });
+    } else {
+      setQrScanVisible(true);
+    }
+    setQrScanned(false);
+  }
+
+  function handleQrScanned({ data }) {
+    if (qrScanned) return;
+    setQrScanned(true);
+
+    // 고객 QR에는 주문 ID(FP-XXXX) 포함
+    const orderId = data?.trim();
+    const matched = orders.find(o => o.id === orderId && o.sellerStatus === 'confirmed');
+
+    if (!matched) {
+      Alert.alert(
+        '주문 없음',
+        `픽업대기 중인 주문 "${orderId}"을 찾을 수 없습니다.`,
+        [{ text: '다시 스캔', onPress: () => setQrScanned(false) },
+         { text: '닫기', onPress: () => setQrScanVisible(false) }]
+      );
+      return;
+    }
+
+    setQrScanVisible(false);
+    Alert.alert(
+      '픽업 완료',
+      `${matched.productName}\n주문자: ${matched.buyerName}\n\n픽업 완료 처리하시겠습니까?`,
+      [
+        { text: '취소', style: 'cancel', onPress: () => setQrScanned(false) },
+        { text: '완료 처리', onPress: () => { completePickup(matched.id); setQrScanned(false); } },
+      ]
+    );
+  }
 
   function getCount(key) {
     return orders.filter(o => o.sellerStatus === key).length;
-  }
-
-  // 수동 픽업 완료(QR 훼손·카메라 불가 시 폴백). RPC 실패를 삼키지 않고 사유를 안내한다.
-  async function handleCompletePickup(order) {
-    setPickupModal(null);
-    try {
-      await completePickup(order.id);
-      Alert.alert('픽업 완료', `${order.id} 주문의 픽업이 완료되었습니다.`);
-    } catch (e) {
-      Alert.alert('픽업 처리 불가', pickupErrorMessage(e));
-    }
-  }
-
-  // 주문 확인 / 취소도 실패 사유를 반드시 노출한다(무반응처럼 보이는 것 방지).
-  async function handleConfirmOrder(order) {
-    try {
-      await confirmOrder(order.id);
-    } catch (e) {
-      Alert.alert('주문 확인 불가', pickupErrorMessage(e));
-    }
-  }
-
-  async function handleCancelOrder(order) {
-    setCancelModal(null);
-    try {
-      await cancelOrder(order.id);
-    } catch (e) {
-      Alert.alert('주문 취소 불가', pickupErrorMessage(e));
-    }
   }
 
   const filtered = orders.filter(o => o.sellerStatus === activeTab);
@@ -100,18 +120,7 @@ export default function OrdersScreen() {
     <View style={{ flex: 1, backgroundColor: '#F5F6F7' }}>
       {/* Header */}
       <View style={{ backgroundColor: '#fff', paddingTop: insets.top + 14, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <Text style={{ fontSize: 22, fontWeight: '700', color: '#1F2933' }}>주문관리</Text>
-          {/* QR 스캔 → 픽업 완료 */}
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => navigation.navigate('QrScan')}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#1F2933', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8 }}
-          >
-            <QrCode color="#fff" size={16} />
-            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>QR 스캔</Text>
-          </TouchableOpacity>
-        </View>
+        <Text style={{ fontSize: 22, fontWeight: '700', color: '#1F2933', marginBottom: 12 }}>주문관리</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={{ flexDirection: 'row', gap: 4 }}>
             {TABS.map(tab => {
@@ -151,6 +160,18 @@ export default function OrdersScreen() {
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingTop: 12, paddingHorizontal: 16 }} showsVerticalScrollIndicator={false}>
+        {/* QR 스캔 배너 (픽업대기 탭) */}
+        {activeTab === 'confirmed' && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={openQrScanner}
+            style={{ backgroundColor: '#22A06B', borderRadius: 14, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 14 }}
+          >
+            <QrCode color="#fff" size={22} />
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>고객 QR 스캔하여 픽업 완료</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Cancelled banner */}
         {activeTab === 'cancelled' && getCount('cancelled') > 0 && (
           <View style={{ backgroundColor: '#FFF0F0', borderRadius: 10, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -159,18 +180,6 @@ export default function OrdersScreen() {
               취소 요청 접수됨 — 확인이 필요합니다
             </Text>
           </View>
-        )}
-
-        {/* 픽업대기 탭 — QR 스캔 진입 (현장에서 가장 많이 쓰는 동작) */}
-        {activeTab === 'confirmed' && (
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={() => navigation.navigate('QrScan')}
-            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#22A06B', borderRadius: 12, paddingVertical: 14, marginBottom: 12 }}
-          >
-            <QrCode color="#fff" size={18} />
-            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>QR 스캔으로 픽업 완료</Text>
-          </TouchableOpacity>
         )}
 
         {filtered.length === 0 ? (
@@ -212,8 +221,8 @@ export default function OrdersScreen() {
                     {order.quantity}개{'  |  '}{formatPrice(order.totalPrice)}
                   </Text>
 
-                  {/* Buyer + Pickup(주문 후 N분 이내 → 마감시각) */}
-                  <View style={{ marginBottom: 10, gap: 5 }}>
+                  {/* Buyer + Pickup */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 10 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                       <User color="#9CA3AF" size={13} />
                       <Text style={{ fontSize: 13, color: '#6B7280' }}>{order.buyerName}</Text>
@@ -221,13 +230,8 @@ export default function OrdersScreen() {
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                       <Clock color="#9CA3AF" size={13} />
                       <Text style={{ fontSize: 13, color: '#6B7280' }}>
-                        픽업 마감 {formatPickupDeadline(order)}
+                        {formatPickupRange(order.pickupStart, order.pickupEnd)}
                       </Text>
-                      {!!order.pickupDeadlineMinutes && (
-                        <Text style={{ fontSize: 12, color: '#9CA3AF' }}>
-                          · 주문 후 {formatDeadlineDuration(order.pickupDeadlineMinutes)}
-                        </Text>
-                      )}
                     </View>
                   </View>
 
@@ -265,7 +269,7 @@ export default function OrdersScreen() {
                       <TouchableOpacity
                         activeOpacity={0.8}
                         style={{ flex: 1, backgroundColor: '#22A06B', borderRadius: 10, alignItems: 'center', paddingVertical: 13 }}
-                        onPress={(e) => { e.stopPropagation?.(); handleConfirmOrder(order); }}
+                        onPress={(e) => { e.stopPropagation?.(); confirmOrder(order.id); }}
                       >
                         <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>주문 확인</Text>
                       </TouchableOpacity>
@@ -351,9 +355,6 @@ export default function OrdersScreen() {
               <Text style={{ color: '#6B7280', fontSize: 14, textAlign: 'center', lineHeight: 22 }}>
                 {pickupModal?.productName} 주문의{'\n'}픽업이 완료되었나요?
               </Text>
-              <Text style={{ color: '#9AA3AF', fontSize: 12, textAlign: 'center', marginTop: 8 }}>
-                주문번호 {pickupModal?.id}
-              </Text>
             </View>
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <TouchableOpacity
@@ -364,12 +365,50 @@ export default function OrdersScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, backgroundColor: '#22A06B', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
-                onPress={() => handleCompletePickup(pickupModal)}
+                onPress={() => { completePickup(pickupModal.id); setPickupModal(null); }}
               >
                 <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>완료 확인</Text>
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* QR 스캔 모달 */}
+      <Modal visible={qrScanVisible} animationType="slide" statusBarTranslucent>
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <CameraView
+            style={StyleSheet.absoluteFillObject}
+            facing="back"
+            onBarcodeScanned={handleQrScanned}
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          />
+          {/* 어두운 오버레이 + 스캔 영역 */}
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 260, height: 260, position: 'relative' }}>
+              {/* 코너 선 */}
+              {[{ top: 0, left: 0 }, { top: 0, right: 0 }, { bottom: 0, left: 0 }, { bottom: 0, right: 0 }].map((pos, i) => (
+                <View key={i} style={{
+                  position: 'absolute', width: 40, height: 40,
+                  borderColor: '#22A06B', borderTopWidth: i < 2 ? 3 : 0,
+                  borderBottomWidth: i >= 2 ? 3 : 0,
+                  borderLeftWidth: i % 2 === 0 ? 3 : 0,
+                  borderRightWidth: i % 2 === 1 ? 3 : 0,
+                  ...pos,
+                }} />
+              ))}
+            </View>
+            <Text style={{ color: '#fff', fontSize: 15, marginTop: 28, fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 6 }}>
+              고객의 QR코드를 스캔해주세요
+            </Text>
+          </View>
+          {/* 닫기 버튼 */}
+          <TouchableOpacity
+            onPress={() => { setQrScanVisible(false); setQrScanned(false); }}
+            style={{ position: 'absolute', top: insets.top + 12, right: 16, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}
+          >
+            <X color="#fff" size={22} />
+          </TouchableOpacity>
         </View>
       </Modal>
 
@@ -395,7 +434,7 @@ export default function OrdersScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, backgroundColor: '#E5484D', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
-                onPress={() => handleCancelOrder(cancelModal)}
+                onPress={() => { cancelOrder(cancelModal.id); setCancelModal(null); }}
               >
                 <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>취소 승인</Text>
               </TouchableOpacity>
