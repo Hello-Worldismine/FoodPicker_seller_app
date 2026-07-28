@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { useAuth } from './authStore';
 import * as api from '../lib/api';
 import { uploadImageIfLocal } from '../lib/storage';
+import { formatDeadlineMinutes } from '../lib/format';
 import { supabase } from '../lib/supabase';
 
 const AppContext = createContext(null);
@@ -79,16 +80,64 @@ export function formatReviewDate(iso) {
   return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// pickup_start/pickup_end → '오늘/어제/내일/M.D HH:MM~HH:MM' (주문 상세)
+function hhmm(d) {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// 날짜 → '오늘' / '어제' / '내일' / 'M.D'
+function dayLabelOf(d) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diff = Math.round((day - today) / 86400000);
+  if (diff === 0) return '오늘';
+  if (diff === -1) return '어제';
+  if (diff === 1) return '내일';
+  return `${d.getMonth() + 1}.${d.getDate()}`;
+}
+
+// pickup_start/pickup_end → '오늘/어제/내일/M.D HH:MM~HH:MM'
+// [구 데이터용] 픽업 정본 표기는 아래 formatPickupDeadline 을 쓴다.
 export function formatPickupWindow(start, end) {
   if (!start) return '';
   const s = new Date(start);
-  const hm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const sDay = new Date(s); sDay.setHours(0, 0, 0, 0);
-  const dayDiff = Math.round((sDay - today) / 86400000);
-  const dayLabel = dayDiff === 0 ? '오늘' : dayDiff === -1 ? '어제' : dayDiff === 1 ? '내일' : `${s.getMonth() + 1}.${s.getDate()}`;
-  return `${dayLabel} ${hm(s)}${end ? '~' + hm(new Date(end)) : ''}`;
+  return `${dayLabelOf(s)} ${hhmm(s)}${end ? '~' + hhmm(new Date(end)) : ''}`;
+}
+
+// 픽업 마감(분) → '30분 이내' / '1시간 이내' / '1시간 30분 이내'
+export function formatDeadlineDuration(minutes) {
+  const label = formatDeadlineMinutes(minutes);
+  return label ? `${label} 이내` : '';
+}
+
+// 픽업 마감 시각 → '오늘 18:30까지' / '어제 21:00까지'
+// 인자: (order 객체) 또는 (pickup_deadline_at) 또는 (ordered_at, pickup_deadline_minutes).
+// pickup_deadline_at 이 없는 구 주문도 ordered_at + 분으로 마감시각을 복원한다.
+export function formatPickupDeadline(source, minutes) {
+  let deadline = null;
+  if (source && typeof source === 'object' && !(source instanceof Date)) {
+    const o = source;
+    if (o.pickupDeadlineAt) deadline = new Date(o.pickupDeadlineAt);
+    else if (o.orderedAt) deadline = new Date(new Date(o.orderedAt).getTime() + (o.pickupDeadlineMinutes ?? 60) * 60000);
+    else if (o.pickupEnd) deadline = new Date(o.pickupEnd); // 구 데이터 폴백
+  } else if (source) {
+    const base = new Date(source);
+    const m = Number(minutes);
+    deadline = Number.isFinite(m) && m > 0 ? new Date(base.getTime() + m * 60000) : base;
+  }
+  if (!deadline || Number.isNaN(deadline.getTime())) return '';
+  return `${dayLabelOf(deadline)} ${hhmm(deadline)}까지`;
+}
+
+// complete_pickup RPC 의 대문자 에러상수 → 판매자용 한국어 안내.
+export function pickupErrorMessage(err) {
+  const msg = String(err?.message || '');
+  if (msg.includes('ALREADY_COMPLETED')) return '이미 픽업 완료된 주문입니다.';
+  if (msg.includes('ORDER_CANCELLED')) return '취소된 주문입니다.';
+  if (msg.includes('NOT_PAID')) return '결제가 완료되지 않은 주문입니다.';
+  if (msg.includes('ORDER_NOT_FOUND') || msg.includes('NOT_MY_ORDER')) return '우리 매장 주문이 아닙니다.';
+  if (msg.includes('INVALID_CODE')) return '주문번호를 인식할 수 없습니다.';
+  if (msg.includes('NOT_AUTHENTICATED')) return '로그인이 필요합니다. 다시 로그인해주세요.';
+  return msg || '픽업 완료 처리에 실패했습니다.';
 }
 
 function withBadges(p) {
@@ -242,10 +291,15 @@ export function AppProvider({ children }) {
   };
 
   // ── 주문 (상태 전이 시각은 stamp 트리거가 자동 기록) ──
-  const completePickup = async (orderId) => {
-    try { await api.updateOrderStatus(orderId, 'completed'); await reloadOrders(); }
-    catch (e) { console.warn('[픽업 완료]', e.message); }
+  // 픽업 완료는 complete_pickup RPC 단독 경로 — 상태/결제 검증과 동시 스캔 직렬화를 서버가 한다.
+  // 실패를 삼키면 판매자가 완료된 줄 알고 상품을 내주게 되므로 반드시 throw 한다(호출부에서 Alert).
+  const completePickup = async (orderCode) => {
+    const order = await api.completePickupByQr(orderCode);
+    await reloadOrders();
+    return order;
   };
+  // 스캔 직후 확인 시트용 조회(본인 매장 주문이 아니면 null).
+  const lookupOrderForPickup = (orderCode) => api.lookupOrderForPickup(orderCode);
   const confirmOrder = async (orderId) => {
     try { await api.updateOrderStatus(orderId, 'confirmed'); await reloadOrders(); }
     catch (e) { console.warn('[주문 확인]', e.message); }
@@ -287,7 +341,7 @@ export function AppProvider({ children }) {
     pauseSale, resumeSale,
     updateProductStock, updateProductStatus,
     addProduct, updateProduct, deleteProduct,
-    completePickup, confirmOrder, cancelOrder,
+    completePickup, lookupOrderForPickup, confirmOrder, cancelOrder,
     updateReviewReply,
     notifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   };

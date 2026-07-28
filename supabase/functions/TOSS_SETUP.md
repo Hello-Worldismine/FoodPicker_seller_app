@@ -9,6 +9,12 @@ FoodPicker 에 토스페이먼츠 결제를 연결하기 위해 **한 번만** �
 사용자앱(결제창) → 토스 결제 인증 → Supabase Edge Function "toss-confirm"
                                       → 토스 승인 API → 주문 생성
 관리자웹(환불)  → Supabase Edge Function "toss-cancel" → 토스 취소 API
+
+[선택 · 자동결제(빌링)]  ※ 토스페이먼츠 별도 사용 신청·승인 필요 — ⑦ 참고
+사용자앱(카드등록)  → 토스 카드 인증(authKey) → Edge Function "toss-billing-issue"
+                                                 → 빌링키 발급 → 카드 저장
+사용자앱(원탭결제)  → Edge Function "toss-billing-charge"
+                       → 저장된 빌링키로 승인 → 주문 생성
 ```
 
 시크릿 키는 서버(Supabase)에만 저장되고 앱에는 절대 들어가지 않습니다.
@@ -135,3 +141,95 @@ FoodPicker 에 토스페이먼츠 결제를 연결하기 위해 **한 번만** �
 2. ③의 `TOSS_SECRET_KEY` 값을 `live_sk_...` 로 교체합니다.
 3. ④의 `EXPO_PUBLIC_TOSS_CLIENT_KEY` 값을 `live_ck_...` 로 교체하고 앱을 재빌드합니다.
 4. 소액으로 실결제 → 환불 테스트를 한 번 해보는 것을 권장합니다.
+
+---
+
+## ⑦ (선택) 자동결제 = 빌링 — 저장한 카드로 원탭 결제
+
+"결제수단 관리"에서 카드를 등록해두고 다음 주문부터 결제창 없이 바로 결제하는 기능입니다.
+**①~⑥ 이 끝난 뒤에만** 진행하세요.
+
+### ⑦-0 먼저 알아야 할 것 — 계약상 별도 신청·승인이 필요합니다
+
+- 자동결제(빌링)는 일반 결제와 **별개의 계약 항목**입니다.
+  토스페이먼츠에 **자동결제 사용 신청을 하고 심사·승인을 받아야** 라이브 키로 쓸 수 있습니다.
+  (신청: 토스페이먼츠 상점관리자 → 결제 설정/서비스 신청, 또는 담당 매니저 문의)
+- **승인 전에는 테스트 키(`test_sk_...`)로 개발 검증만 가능합니다.**
+  승인 없이 라이브 키로 빌링 API 를 호출하면 토스가
+  `NOT_AVAILABLE_PAYMENTS` / `NOT_SUPPORTED_METHOD` 계열 오류를 돌려줍니다.
+  이 경우는 코드 문제가 아니라 **계약·권한 문제**이므로 토스페이먼츠에 문의해야 합니다.
+- 카드 정보(카드번호/CVC)는 FoodPicker 서버에 저장되지 않습니다. 토스가 발급한
+  **빌링키만** Supabase 에 저장되고, 이 빌링키는 앱으로 절대 내려가지 않습니다.
+  (`payment_methods` 테이블은 앱 접근이 전면 차단되어 있고, 앱은 `my_payment_methods`
+  뷰로 카드사·마스킹번호만 봅니다.)
+
+### ⑦-1 데이터베이스 마이그레이션
+
+Supabase 대시보드 → **SQL Editor → New query** 에
+`supabase/migrations/20260728000000_pickup_deadline_geo_qr_paymethod.sql` 내용을
+전체 붙여넣고 **Run** 합니다. (여러 번 실행해도 안전합니다.)
+이 SQL 이 결제수단 테이블(`payment_methods`) · 노출용 뷰(`my_payment_methods`) ·
+기본 결제수단 지정/삭제 함수를 만들어 줍니다.
+
+### ⑦-2 Edge Function 2개 배포
+
+②와 같은 방식(대시보드 → Edge Functions → Deploy a new function → Via Editor)으로
+아래 두 개를 추가합니다.
+
+| 함수 이름 | 붙여넣을 파일 |
+|---|---|
+| `toss-billing-issue` | `supabase/functions/toss-billing-issue/index.ts` |
+| `toss-billing-charge` | `supabase/functions/toss-billing-charge/index.ts` |
+
+Supabase CLI 를 쓸 수 있다면(설치되어 있고 `supabase login` 이 된 상태) 저장소 루트에서
+아래 명령으로도 배포됩니다. `--project-ref` 값은 Supabase 프로젝트 URL 의
+`https://<project-ref>.supabase.co` 부분입니다.
+
+```bash
+cd FoodPicker_seller_app
+supabase functions deploy toss-billing-issue  --project-ref <project-ref>
+supabase functions deploy toss-billing-charge --project-ref <project-ref>
+```
+
+두 함수 모두 사용자 로그인(JWT)이 필요하므로 함수 설정은 **기본값 그대로**(JWT 검증 켜짐) 둡니다.
+
+### ⑦-3 시크릿
+
+추가로 등록할 시크릿은 **없습니다.** ③에서 등록한 `TOSS_SECRET_KEY` 를 두 함수가 그대로
+사용합니다(같은 프로젝트의 모든 Edge Function 이 시크릿을 공유합니다).
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 도 Supabase 가 자동으로 넣어줍니다.
+
+| 이름 | 값 | 누가 넣나 |
+|---|---|---|
+| `TOSS_SECRET_KEY` | `test_sk_...` (승인 후 `live_sk_...`) | ③에서 등록한 값 재사용 |
+| `SUPABASE_URL` | 자동 | Supabase |
+| `SUPABASE_SERVICE_ROLE_KEY` | 자동 | Supabase |
+
+### ⑦-4 앱이 호출하는 방식(개발자 참고)
+
+- 카드 등록: 앱이 결제창 SDK 의 `requestBillingAuth` 로 받은 `authKey` 를
+  `toss-billing-issue` 에 POST 합니다. 이때 `customerKey` 는 **반드시 로그인 사용자의
+  Supabase user id** 여야 합니다(서버가 JWT 의 uid 와 대조해 다르면 거부).
+  응답은 `{ paymentMethod: { id, cardCompany, cardNumberMasked, cardType, isDefault } }`
+  이며 빌링키는 포함되지 않습니다.
+- 원탭 결제: `toss-billing-charge` 에
+  `{ paymentMethodId, productId, quantity, couponIds, orderId }` 를 POST 합니다.
+  결제 금액은 **서버가 재계산**하므로 앱이 금액을 보내지 않습니다.
+  `orderId` 는 결제 시도 1건마다 하나만 만들어 재시도 때도 **같은 값**을 보내야 합니다
+  (이중 결제 방지용 멱등키. 생략하면 서버가 만들지만 재시도 보호가 약해집니다).
+- 주문 생성이 실패하면 서버가 토스 결제를 자동 취소합니다(일반 결제와 동일한 보상 로직).
+
+### ⑦-5 테스트
+
+1. 사용자앱 → 마이 → **결제수단 관리 → 카드 추가** 로 테스트 카드를 등록합니다.
+2. 목록에 카드사·마스킹된 카드번호가 보이면 등록 성공입니다.
+3. 주문 화면에서 등록한 카드로 결제하면 결제창 없이 바로 주문이 만들어집니다.
+4. 토스 개발자센터 → **테스트 결제 내역** 에서 승인 내역을 확인합니다.
+
+| 증상 | 원인/해결 |
+|---|---|
+| 카드 등록 시 `NOT_AVAILABLE_PAYMENTS` / 자동결제 미지원 오류 | 자동결제 사용 승인 전(⑦-0). 테스트 키로만 검증 가능 |
+| "카드 등록 정보가 일치하지 않습니다" | 앱이 `customerKey` 로 Supabase user id 를 쓰지 않음 |
+| 등록은 됐는데 목록이 비어 보임 | ⑦-1 마이그레이션 미실행(`my_payment_methods` 뷰 없음) |
+| 결제 시 "등록된 결제수단을 찾을 수 없습니다" | 다른 계정으로 등록한 카드 id 를 보냄(본인 카드만 사용 가능) |
+| 같은 카드를 두 번 등록해도 목록이 1개 | 정상 — 같은 카드는 최신 빌링키로 갱신됩니다 |

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -19,8 +19,10 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../store/appStore';
 import { useAuth } from '../store/authStore';
-import { uploadImageIfLocal } from '../lib/storage';
+import { uploadImageIfLocal, isUnsupportedImageUrl } from '../lib/storage';
+import { formatDeadlineMinutes } from '../lib/format';
 import DaumPostcodeModal from '../components/DaumPostcodeModal';
+import NaverGeocoder from '../components/NaverGeocoder';
 import {
   ChevronRight,
   ChevronLeft,
@@ -55,6 +57,49 @@ const APPROVAL_CONFIG = {
 
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DAY_LABELS = { mon: '월', tue: '화', wed: '수', thu: '목', fri: '금', sat: '토', sun: '일' };
+
+// iOS 기본값(Automatic)은 HEIC 원본 표현을 넘겨준다 → 업로드된 사진이 안드로이드·웹에서 렌더 불가.
+// Compatible 을 지정해 JPEG 표현을 요청한다(expo-image-picker 17 지원 옵션).
+const IMAGE_PICKER_BASE = {
+  mediaTypes: ImagePicker.MediaTypeOptions.Images,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+};
+
+// 저장된 이미지가 HEIC 등 미지원 형식이면 RN <Image> 는 조용히 빈칸을 그린다.
+// 확장자로 선판정 + onError 를 잡아 재업로드 안내로 대체한다.
+function FallbackImage({ uri, style, resizeMode = 'cover', compact = false }) {
+  const [failed, setFailed] = useState(() => !!uri && isUnsupportedImageUrl(uri));
+
+  useEffect(() => { setFailed(!!uri && isUnsupportedImageUrl(uri)); }, [uri]);
+
+  if (!uri) return null;
+  if (failed) {
+    return (
+      <View
+        style={[
+          { alignItems: 'center', justifyContent: 'center', backgroundColor: '#F5F6F7', padding: 6 },
+          style,
+        ]}
+      >
+        <Text
+          style={{ color: '#9AA3AF', fontSize: compact ? 9 : 12, textAlign: 'center', lineHeight: compact ? 12 : 17 }}
+          numberOfLines={compact ? 3 : undefined}
+        >
+          {compact ? '표시 불가\n형식 미지원' : '이미지를 표시할 수 없습니다(형식 미지원).\n다시 업로드해주세요'}
+        </Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri }}
+      style={style}
+      resizeMode={resizeMode}
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 function formatBizNum(raw) {
   const d = raw.replace(/\D/g, '').slice(0, 10);
@@ -105,10 +150,15 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
   const [name, setName] = useState(storeInfo.name);
   const [bizNumber, setBizNumber] = useState(storeInfo.bizNumber);
   const [bizCertFile, setBizCertFile] = useState(null);
-  const [showBizUpload, setShowBizUpload] = useState(false);
   const [residentFront, setResidentFront] = useState(storeInfo.residentNumber?.split('-')[0] || '');
   const [residentBack, setResidentBack] = useState(storeInfo.residentNumber?.split('-')[1] || '');
   const [address, setAddress] = useState(storeInfo.address);
+  // 주소만 저장하고 좌표를 저장하지 않아 사용자앱 지도에 매장이 뜨지 않던 문제 대응.
+  const [coords, setCoords] = useState(
+    storeInfo.lat != null && storeInfo.lng != null ? { lat: storeInfo.lat, lng: storeInfo.lng } : null
+  );
+  const [geocoding, setGeocoding] = useState(false);
+  const geocoderRef = useRef(null);
   const [showPostcode, setShowPostcode] = useState(false);
   const [bankName, setBankName] = useState(storeInfo.bankName);
   const [accountNumber, setAccountNumber] = useState(storeInfo.accountNumber);
@@ -119,13 +169,17 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
   const originalBiz = storeInfo.bizNumber;
   const bizChanged = bizNumber !== originalBiz;
 
-  const canSubmit = changeReason.trim().length > 0 && (!bizChanged || bizCertFile);
+  // 주소는 사용자앱 지도·픽업 안내의 기준값이라 필수. 사업자번호를 바꿨다면 등록증 재업로드도 필수.
+  const canSubmit =
+    changeReason.trim().length > 0 &&
+    !!address &&
+    (!bizChanged || !!bizCertFile);
 
   async function pickBizCert() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      ...IMAGE_PICKER_BASE,
       quality: 0.8,
     });
     if (!result.canceled && result.assets?.[0]) {
@@ -133,10 +187,21 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     }
   }
 
+  // 주소 선택 즉시 좌표를 구한다(네이버 지도 JS SDK geocoder).
+  async function resolveAddress(addr) {
+    setAddress(addr);
+    setCoords(null);
+    if (!addr) return;
+    setGeocoding(true);
+    try {
+      setCoords((await geocoderRef.current?.geocode(addr)) || null);
+    } finally {
+      setGeocoding(false);
+    }
+  }
+
   function handleBizNumberChange(text) {
-    const formatted = formatBizNum(text);
-    setBizNumber(formatted);
-    setShowBizUpload(formatted !== originalBiz);
+    setBizNumber(formatBizNum(text));
   }
 
   // 변경 신청: 허용 컬럼은 setStoreInfo가 storeToDb→updateStoreRow로 DB 영속.
@@ -146,16 +211,23 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
     try {
+      // 새로 선택한 등록증이 있으면 사업자번호 변경 여부와 무관하게 항상 업로드한다
+      // (번호는 그대로인데 등록증만 갱신하는 경우가 흔하다).
       let bizCertImage = storeInfo.bizCertImage;
-      if (bizChanged && bizCertFile) {
+      if (bizCertFile) {
         bizCertImage = await uploadImageIfLocal(bizCertFile, null, 'documents');
       }
+      // 좌표 최종 확보(주소는 바뀌었는데 좌표를 못 구한 경우 한 번 더 시도)
+      let geo = coords;
+      if (!geo && address) geo = await geocoderRef.current?.geocode(address);
+
       setStoreInfo(prev => ({
         ...prev,
         name,
         bizNumber,
         residentNumber: `${residentFront}-${residentBack}`,
         address,
+        ...(geo ? { lat: geo.lat, lng: geo.lng } : {}),
         bankName,
         accountNumber,
         accountHolder,
@@ -177,10 +249,12 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     setName(storeInfo.name);
     setBizNumber(storeInfo.bizNumber);
     setBizCertFile(null);
-    setShowBizUpload(false);
     setResidentFront(storeInfo.residentNumber?.split('-')[0] || '');
     setResidentBack(storeInfo.residentNumber?.split('-')[1] || '');
     setAddress(storeInfo.address);
+    setCoords(
+      storeInfo.lat != null && storeInfo.lng != null ? { lat: storeInfo.lat, lng: storeInfo.lng } : null
+    );
     setBankName(storeInfo.bankName);
     setAccountNumber(storeInfo.accountNumber);
     setAccountHolder(storeInfo.accountHolder);
@@ -237,31 +311,42 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
                 placeholderTextColor="#9AA3AF"
                 keyboardType="numeric"
               />
-              {showBizUpload && (
-                <View className="mt-2">
+              {/* 등록증 업로드/미리보기는 항상 노출한다 — 번호는 그대로 두고 등록증만
+                  다시 올리고 싶은 경우가 많아 예전처럼 번호 변경 시에만 열면 진입이 불가능하다. */}
+              <View className="mt-2">
+                {bizChanged ? (
                   <Text className="text-xs text-orange mb-1.5">
                     사업자등록번호 변경 시 사업자등록증 재업로드가 필요합니다
                   </Text>
-                  <TouchableOpacity
-                    onPress={pickBizCert}
-                    className="border-2 border-dashed border-orange/40 rounded-xl p-4 items-center"
-                    style={{ backgroundColor: '#FFF8F4' }}
-                  >
-                    {bizCertFile ? (
-                      <View style={{ alignItems: 'center', width: '100%' }}>
-                        <Image source={{ uri: bizCertFile }} style={{ width: '100%', height: 128, borderRadius: 8 }} resizeMode="cover" />
-                        <Text className="text-primary text-xs mt-2">탭하여 다시 선택</Text>
-                      </View>
-                    ) : (
-                      <View className="items-center">
-                        <Camera color="#FF8A3D" size={24} />
-                        <Text className="text-orange text-sm mt-1.5 font-semibold">사업자등록증 업로드</Text>
-                        <Text className="text-gray-400 text-xs mt-0.5">이미지 파일 선택</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              )}
+                ) : (
+                  <Text className="text-xs text-gray-400 mb-1.5">사업자등록증 (필요 시 재업로드)</Text>
+                )}
+                <TouchableOpacity
+                  onPress={pickBizCert}
+                  className="border-2 border-dashed border-orange/40 rounded-xl p-4 items-center"
+                  style={{ backgroundColor: '#FFF8F4' }}
+                >
+                  {bizCertFile || storeInfo.bizCertImage ? (
+                    <View style={{ alignItems: 'center', width: '100%' }}>
+                      {/* 등록증은 문서 → 상하가 잘리지 않도록 contain */}
+                      <FallbackImage
+                        uri={bizCertFile || storeInfo.bizCertImage}
+                        style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#fff' }}
+                        resizeMode="contain"
+                      />
+                      <Text className="text-primary text-xs mt-2">
+                        {bizCertFile ? '새로 선택한 파일 · 탭하여 다시 선택' : '등록된 등록증 · 탭하여 재업로드'}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View className="items-center">
+                      <Camera color="#FF8A3D" size={24} />
+                      <Text className="text-orange text-sm mt-1.5 font-semibold">사업자등록증 업로드</Text>
+                      <Text className="text-gray-400 text-xs mt-0.5">JPG · PNG 이미지 파일 선택</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* Resident Number */}
@@ -293,7 +378,7 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
 
             {/* Address */}
             <View className="mx-4 mb-3">
-              <Text className="text-sm font-bold text-charcoal mb-2">매장 주소</Text>
+              <Text className="text-sm font-bold text-charcoal mb-2">매장 주소 *</Text>
               <TouchableOpacity
                 className="bg-white rounded-xl px-4 py-3 flex-row items-center gap-2 border border-gray-100"
                 onPress={() => setShowPostcode(true)}
@@ -304,6 +389,16 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
                 </Text>
                 <Text className="text-primary text-sm font-semibold">검색</Text>
               </TouchableOpacity>
+              {/* 좌표 확보 상태 — 좌표가 없으면 사용자앱 지도에 매장이 표시되지 않는다 */}
+              {geocoding ? (
+                <Text className="text-xs text-gray-500 mt-2">지도 위치를 확인하고 있어요…</Text>
+              ) : address && coords ? (
+                <Text className="text-xs text-primary mt-2">✓ 지도 위치 확인 완료</Text>
+              ) : address ? (
+                <Text className="text-xs mt-2" style={{ color: '#B45309' }}>
+                  지도 위치를 찾지 못했습니다 · 사용자 앱 지도에 표시되지 않을 수 있어요
+                </Text>
+              ) : null}
             </View>
 
             {/* Bank Info */}
@@ -384,8 +479,12 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
         <DaumPostcodeModal
           visible={showPostcode}
           onClose={() => setShowPostcode(false)}
-          onSelect={addr => setAddress(addr)}
+          onSelect={addr => { setShowPostcode(false); resolveAddress(addr); }}
         />
+
+        {/* 주소 → 좌표 변환용 숨김 WebView. 렌더하지 않으면 geocoderRef.current 가 없어
+            좌표가 항상 null 이 되고 사용자앱 지도에 매장이 표시되지 않는다. */}
+        <NaverGeocoder ref={geocoderRef} />
       </View>
     </Modal>
   );
@@ -780,14 +879,45 @@ export default function StoreScreen() {
   const [showPreview, setShowPreview] = useState(false);
   const [showCustomerCenter, setShowCustomerCenter] = useState(false);
   const [bizUploading, setBizUploading] = useState(false);
+  const [bizCertPending, setBizCertPending] = useState(null); // 선택했지만 아직 업로드 전인 로컬 URI
+  const [showBizCertViewer, setShowBizCertViewer] = useState(false);
+
+  const geocoderRef = useRef(null);
+  const geoBackfilled = useRef(false);
 
   const approvalCfg = APPROVAL_CONFIG[storeInfo.approvalStatus] || APPROVAL_CONFIG.pending;
+
+  // 기존 매장은 주소만 저장되고 lat/lng 가 비어 있어 사용자앱 지도·픽업 위치에 표시되지 않는다.
+  // 진입 시 1회 좌표만 보정한다.
+  // ※ address 를 함께 쓰면 flag_store_reapproval 트리거가 approval_status 를 pending 으로
+  //    되돌려 사용자앱에서 매장이 사라진다 → 좌표만 갱신(트리거 감시 대상 아님).
+  useEffect(() => {
+    if (geoBackfilled.current) return;
+    if (!storeInfo?.address) return;
+    if (storeInfo.lat != null && storeInfo.lng != null) return;
+    geoBackfilled.current = true;
+
+    let cancelled = false;
+    // 숨김 WebView 안 네이버 SDK 로드를 잠깐 기다린다(요청은 SDK 준비 전에도 큐에 쌓인다).
+    const timer = setTimeout(async () => {
+      try {
+        const coords = await geocoderRef.current?.geocode(storeInfo.address);
+        if (!cancelled && coords) {
+          setStoreInfo(prev => ({ ...prev, lat: coords.lat, lng: coords.lng }));
+        }
+      } catch (e) {
+        console.warn('[store geo backfill]', e?.message || e);
+      }
+    }, 1200);
+
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [storeInfo?.address, storeInfo?.lat, storeInfo?.lng]);
 
   async function pickStoreImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      ...IMAGE_PICKER_BASE,
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
@@ -797,20 +927,28 @@ export default function StoreScreen() {
     }
   }
 
-  async function uploadBizCert() {
+  // 1단계: 선택만 하고 로컬 미리보기를 띄운다(바로 업로드하지 않는다).
+  async function pickBizCertForUpload() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      ...IMAGE_PICKER_BASE,
       quality: 0.8,
     });
     if (result.canceled || !result.assets?.[0]) return;
+    setBizCertPending(result.assets[0].uri);
+  }
+
+  // 2단계: 미리보기에서 확정했을 때만 업로드한다.
+  async function confirmBizCertUpload() {
+    if (!bizCertPending || bizUploading) return;
     setBizUploading(true);
     try {
       // Storage 업로드 후 public URL을 stores.biz_cert_image에 영속(setStoreInfo→updateStoreRow).
-      const url = await uploadImageIfLocal(result.assets[0].uri, null, 'documents');
+      const url = await uploadImageIfLocal(bizCertPending, null, 'documents');
       setStoreInfo(prev => ({ ...prev, bizCertImage: url }));
-      Alert.alert('업로드 완료', '사업자등록증이 재업로드되었습니다.');
+      setBizCertPending(null);
+      Alert.alert('업로드 완료', '사업자등록증이 등록되었습니다.');
     } catch (e) {
       Alert.alert('업로드 실패', e.message || '이미지 업로드에 실패했습니다.');
     } finally {
@@ -834,7 +972,12 @@ export default function StoreScreen() {
               <TouchableOpacity onPress={pickStoreImage}>
                 <View className="w-20 h-20 rounded-2xl bg-softgray overflow-hidden items-center justify-center border-2 border-gray-100">
                   {storeInfo.storeImage ? (
-                    <Image source={{ uri: storeInfo.storeImage }} className="w-full h-full" resizeMode="cover" />
+                    <FallbackImage
+                      uri={storeInfo.storeImage}
+                      style={{ width: '100%', height: '100%' }}
+                      resizeMode="cover"
+                      compact
+                    />
                   ) : (
                     <View className="items-center">
                       <Building2 color="#9AA3AF" size={24} />
@@ -1037,24 +1180,41 @@ export default function StoreScreen() {
             <Text className="font-bold text-charcoal text-[16px]">서류</Text>
           </View>
           <View className="px-4 py-3 flex-row items-center justify-between">
-            <View className="flex-row items-center gap-3">
+            <View className="flex-row items-center gap-3 flex-1">
               <FileText color="#22A06B" size={18} />
-              <View>
+              <View className="flex-1">
                 <Text className="text-charcoal text-[15px] font-semibold">사업자등록증</Text>
                 <Text
                   className="text-[13px] mt-0.5"
                   style={{ color: storeInfo.bizCertImage ? '#22A06B' : '#9AA3AF' }}
                 >
-                  {storeInfo.bizCertImage ? '등록 완료' : '미등록'}
+                  {storeInfo.bizCertImage ? '등록 완료 · 썸네일을 탭하면 크게 보입니다' : '미등록'}
                 </Text>
               </View>
             </View>
+            {/* 저장된 등록증 썸네일 — 탭하면 전체화면으로 확대 */}
+            {!!storeInfo.bizCertImage && (
+              <TouchableOpacity
+                onPress={() => setShowBizCertViewer(true)}
+                className="mr-2 rounded-lg overflow-hidden border border-gray-200"
+                style={{ width: 48, height: 48, backgroundColor: '#fff' }}
+              >
+                <FallbackImage
+                  uri={storeInfo.bizCertImage}
+                  style={{ width: 48, height: 48 }}
+                  resizeMode="contain"
+                  compact
+                />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
-              onPress={uploadBizCert}
+              onPress={pickBizCertForUpload}
               disabled={bizUploading}
               className="bg-softgray border border-gray-200 rounded-lg px-3 py-1.5"
             >
-              <Text className="text-gray-600 text-xs font-semibold">{bizUploading ? '업로드 중…' : '재업로드'}</Text>
+              <Text className="text-gray-600 text-xs font-semibold">
+                {bizUploading ? '업로드 중…' : storeInfo.bizCertImage ? '재업로드' : '업로드'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1201,6 +1361,74 @@ export default function StoreScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* 사업자등록증 전체화면 보기 */}
+      <Modal
+        visible={showBizCertViewer && !!storeInfo.bizCertImage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowBizCertViewer(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)' }}>
+          <View style={{ paddingTop: insets.top + 12, paddingHorizontal: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>사업자등록증</Text>
+            <TouchableOpacity onPress={() => setShowBizCertViewer(false)} className="p-1">
+              <X color="#fff" size={24} />
+            </TouchableOpacity>
+          </View>
+          <View style={{ flex: 1, padding: 12 }}>
+            <FallbackImage
+              uri={storeInfo.bizCertImage}
+              style={{ flex: 1, width: '100%' }}
+              resizeMode="contain"
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* 재업로드 확정 — '선택 → 미리보기 확인 → 업로드' 2단계 */}
+      <Modal
+        visible={!!bizCertPending}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!bizUploading) setBizCertPending(null); }}
+      >
+        <View className="flex-1 bg-black/60 items-center justify-center px-6">
+          <View className="bg-white rounded-2xl p-5 w-full">
+            <Text className="text-[16px] font-bold text-charcoal mb-1 text-center">사업자등록증 확인</Text>
+            <Text className="text-gray-500 text-xs text-center mb-3">
+              내용이 잘 보이는지 확인한 뒤 업로드해주세요
+            </Text>
+            <FallbackImage
+              uri={bizCertPending}
+              style={{ width: '100%', height: 260, borderRadius: 10, backgroundColor: '#F5F6F7' }}
+              resizeMode="contain"
+            />
+            <View className="flex-row gap-3 mt-4">
+              <TouchableOpacity
+                className="flex-1 border border-gray-200 rounded-xl py-3 items-center"
+                onPress={() => setBizCertPending(null)}
+                disabled={bizUploading}
+              >
+                <Text className="text-gray-600 font-semibold">다시 선택</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                className="flex-1 rounded-xl py-3 items-center"
+                style={{ backgroundColor: bizUploading ? '#E5E7EB' : '#22A06B' }}
+                onPress={confirmBizCertUpload}
+                disabled={bizUploading}
+              >
+                <Text className="font-semibold" style={{ color: bizUploading ? '#9AA3AF' : '#fff' }}>
+                  {bizUploading ? '업로드 중…' : '업로드'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 좌표 백필용 숨김 WebView */}
+      <NaverGeocoder ref={geocoderRef} />
 
       <StorePreviewModal
         visible={showPreview}
@@ -1349,14 +1577,14 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
     navigation?.navigate('Reviews');
   }
 
-  function fmtTime(iso) {
-    const d = new Date(iso);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  }
-
-  const pickupTime = sellingProducts.length > 0 && sellingProducts[0].pickupStart
-    ? `${fmtTime(sellingProducts[0].pickupStart)} ~ ${fmtTime(sellingProducts[0].pickupEnd)}`
-    : null;
+  // 픽업 기준은 '주문 후 N분 이내'(products.pickup_deadline_minutes)다.
+  // 예전 pickupStart/End 기반 표기는 해당 컬럼을 더 이상 채우지 않아 항상 비어 있었다.
+  const deadlineMinutes =
+    sellingProducts.find(p => p.pickupDeadlineMinutes > 0)?.pickupDeadlineMinutes
+    || storeInfo.defaultPickupDeadlineMinutes
+    || null;
+  const deadlineLabel = formatDeadlineMinutes(deadlineMinutes);
+  const pickupTime = deadlineLabel ? `주문 후 ${deadlineLabel} 이내` : null;
 
   function buildSummaryHours() {
     const days = storeInfo.openHours?.days;
@@ -1385,7 +1613,12 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 22, paddingTop: 4, gap: 14 }}>
             <View style={{ width: 72, height: 72, borderRadius: 16, backgroundColor: '#fff', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
               {storeInfo.storeImage ? (
-                <Image source={{ uri: storeInfo.storeImage }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                <FallbackImage
+                  uri={storeInfo.storeImage}
+                  style={{ width: '100%', height: '100%' }}
+                  resizeMode="cover"
+                  compact
+                />
               ) : (
                 <Building2 color="#9AA3AF" size={30} />
               )}
@@ -1540,7 +1773,11 @@ function PreviewProductCard({ product, storeInfo }) {
       {/* Image area */}
       <View style={{ height: 190, backgroundColor: '#F5F6F7', alignItems: 'center', justifyContent: 'center' }}>
         {product.thumbnail ? (
-          <Image source={{ uri: product.thumbnail }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          <FallbackImage
+            uri={product.thumbnail}
+            style={{ width: '100%', height: '100%' }}
+            resizeMode="cover"
+          />
         ) : (
           <Text style={{ fontSize: 72 }}>{product.emoji}</Text>
         )}

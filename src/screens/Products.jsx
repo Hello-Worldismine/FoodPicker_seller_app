@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { useApp, PRODUCT_STATUS } from '../store/appStore';
+import { useApp, PRODUCT_STATUS, formatDeadlineDuration } from '../store/appStore';
 import { Plus, Minus, Edit2, MoreHorizontal, Trash2, AlertTriangle } from 'lucide-react-native';
 
 const TABS = [
@@ -21,15 +21,6 @@ const TABS = [
   { key: 'paused',  label: '판매중지' },
   { key: 'hidden',  label: '반려' },
 ];
-
-function formatPickupTime(start, end) {
-  if (!start) return '';
-  const fmt = iso => {
-    const d = new Date(iso);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  };
-  return `${fmt(start)}~${fmt(end)}`;
-}
 
 function formatExpiry(isoDate) {
   if (!isoDate) return '';
@@ -71,9 +62,22 @@ export default function ProductsScreen() {
   function handleResume(product) {
     if (product.stock === 0) {
       Alert.alert('수량 설정 필요', '판매를 재개하려면 먼저 수량을 설정해주세요.');
-    } else {
-      updateProductStatus(product.id, 'selling');
+      return;
     }
+    // 소비기한이 지난 상품은 재개해도 서버 스케줄러(5분 주기)가 다시 판매중지로 되돌린다.
+    // 판매자가 원인을 알 수 없으므로 여기서 막고 소비기한 수정으로 유도한다.
+    if (product.expiryDate && new Date(product.expiryDate).getTime() <= Date.now()) {
+      Alert.alert(
+        '소비기한 만료',
+        '소비기한이 지나 자동으로 판매중지된 상품입니다.\n소비기한을 먼저 수정해야 판매를 재개할 수 있습니다.',
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '소비기한 수정', onPress: () => navigation.navigate('ProductForm', { productId: product.id }) },
+        ],
+      );
+      return;
+    }
+    updateProductStatus(product.id, 'selling');
   }
 
   function openMenu(product, evt) {
@@ -206,7 +210,7 @@ export default function ProductsScreen() {
                   {/* Pickup & Expiry */}
                   <View style={{ flexDirection: 'row', gap: 12, marginTop: 10, marginBottom: 10 }}>
                     <Text style={{ fontSize: 12, color: '#9CA3AF' }}>
-                      픽업 {formatPickupTime(product.pickupStart, product.pickupEnd)}
+                      픽업 주문 후 {formatDeadlineDuration(product.pickupDeadlineMinutes ?? 60)}
                     </Text>
                     <Text style={{ fontSize: 12, color: expired ? '#E5484D' : '#9CA3AF' }}>
                       소비기한 {expiryStr}

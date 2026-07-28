@@ -17,6 +17,7 @@ import SettlementScreen from './src/screens/Settlement';
 import StoreScreen from './src/screens/Store';
 import ProductFormScreen from './src/screens/ProductForm';
 import OrderDetailScreen from './src/screens/OrderDetail';
+import QrScanScreen from './src/screens/QrScan';
 import ReviewsScreen from './src/screens/Reviews';
 import NoticeListScreen from './src/screens/NoticeList';
 import NoticeDetailScreen from './src/screens/NoticeDetail';
@@ -150,6 +151,8 @@ function RootNavigator() {
       <Stack.Screen name="MainTabs" component={MainTabs} />
       <Stack.Screen name="ProductForm" component={ProductFormScreen} />
       <Stack.Screen name="OrderDetail" component={OrderDetailScreen} />
+      {/* QR 픽업 스캔 — 카메라 전체화면(탭바 가림) */}
+      <Stack.Screen name="QrScan" component={QrScanScreen} options={{ presentation: 'fullScreenModal' }} />
       <Stack.Screen name="Reviews" component={ReviewsScreen} />
       <Stack.Screen name="NoticeList" component={NoticeListScreen} />
       <Stack.Screen name="NoticeDetail" component={NoticeDetailScreen} />

@@ -71,6 +71,13 @@ function formatTime(date) {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+// 소비기한 기본값용 — 내일 날짜
+function tomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d;
+}
+
 function parseTimeToDate(timeStr) {
   const [h, m] = timeStr.split(':').map(Number);
   const d = new Date();
@@ -118,7 +125,7 @@ export default function ProductFormScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const insets = useSafeAreaInsets();
-  const { products, addProduct, updateProduct } = useApp();
+  const { products, addProduct, updateProduct, storeInfo } = useApp();
 
   const { productId } = route.params || {};
   const editProduct = productId ? products.find(p => p.id === productId) : null;
@@ -133,16 +140,20 @@ export default function ProductFormScreen() {
   const [reductionAmount, setReductionAmount] = useState(editProduct?.reductionAmount?.toString() || '');
   const [intervalMinutes, setIntervalMinutes] = useState(editProduct?.intervalMinutes || 30);
   const [stock, setStock] = useState(editProduct?.stock?.toString() || '');
+  // 소비기한 기본값 = '내일 23:59'.
+  // 서버 cron(expire_products)이 5분마다 `expiry_date < now()` 인 상품을 판매중지로 바꾸므로
+  // 기본값이 '오늘 23:59' 였을 때 등록 당일 자정에 전 상품이 사용자앱에서 사라졌다.
   const [expiryDate, setExpiryDate] = useState(
-    editProduct?.expiryDate ? formatDate(editProduct.expiryDate) : formatDate(new Date())
+    editProduct?.expiryDate ? formatDate(editProduct.expiryDate) : formatDate(tomorrow())
   );
   const [expiryTime, setExpiryTime] = useState(
     editProduct?.expiryDate ? formatTime(editProduct.expiryDate) : '23:59'
   );
   const [storage, setStorage] = useState(editProduct?.storage?.replace(' 보관', '') || '냉장');
   const [storageDetail, setStorageDetail] = useState(editProduct?.storageDetail || '');
+  // 신규 등록 시 기본값 = 입점 신청 때 설정한 매장 기본 픽업 마감(stores.default_pickup_deadline_minutes)
   const [pickupDeadlineMinutes, setPickupDeadlineMinutes] = useState(
-    editProduct?.pickupDeadlineMinutes || 60
+    editProduct?.pickupDeadlineMinutes || storeInfo?.defaultPickupDeadlineMinutes || 60
   );
   const [description, setDescription] = useState(editProduct?.description || '');
   const [composition, setComposition] = useState(editProduct?.composition || '');
@@ -233,6 +244,9 @@ export default function ProductFormScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
+      // iOS 기본값(Automatic)은 HEIC 원본을 넘겨 업로드 후 렌더가 되지 않는다 → JPEG 표현 요청.
+      preferredAssetRepresentationMode:
+        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
     if (!result.canceled && result.assets?.[0]) {
       setImages(prev => [...prev, result.assets[0].uri].slice(0, 10));
@@ -279,9 +293,19 @@ export default function ProductFormScreen() {
     if (reductionError) { Alert.alert('오류', '회당 인하 금액은 (시작가 - 하한가)를 초과할 수 없습니다.'); return; }
     if (!stock || isNaN(parseInt(stock))) { Alert.alert('오류', '판매 수량을 입력해주세요.'); return; }
 
+    if (!images.length) { Alert.alert('오류', '상품 사진을 1장 이상 등록해주세요.'); return; }
+    if (!pickupDeadlineMinutes) { Alert.alert('오류', '주문 후 픽업 마감을 선택해주세요.'); return; }
+
     const [ey, em, ed] = expiryDate.split('-').map(Number);
     const [eth, etm] = expiryTime.split(':').map(Number);
     const expDate = new Date(ey, em - 1, ed, eth, etm, 0);
+
+    // 소비기한이 이미 지났으면 서버 cron(expire_products)이 5분 안에 판매중지로 바꿔
+    // 사용자앱에서 사라진다 → 등록 단계에서 차단한다.
+    if (expDate.getTime() <= Date.now()) {
+      Alert.alert('소비기한 확인', '소비기한이 현재 시각보다 이후여야 합니다.\n소비기한이 지난 상품은 자동으로 판매중지 처리됩니다.');
+      return;
+    }
 
     // 프리셋 목록 외 '기타 알레르기 직접 입력' 값도 병합(중복 제외).
     const extraAllergen = otherAllergen.trim();
@@ -846,6 +870,8 @@ export default function ProductFormScreen() {
                   value={pickerValue}
                   mode={pickerMode}
                   display="spinner"
+                  // 소비기한은 과거 날짜를 고를 수 없게 한다(등록 직후 자동 판매중지 방지)
+                  minimumDate={pickerTarget === 'expiryDate' ? new Date() : undefined}
                   onChange={(e, d) => { if (d) { setPickerValue(d); handlePickerChange(e, d); } }}
                   locale="ko-KR"
                 />
@@ -857,6 +883,7 @@ export default function ProductFormScreen() {
             value={pickerValue}
             mode={pickerMode}
             display="default"
+            minimumDate={pickerTarget === 'expiryDate' ? new Date() : undefined}
             onChange={(e, d) => { handlePickerChange(e, d); }}
           />
         )

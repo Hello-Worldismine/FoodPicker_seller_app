@@ -32,6 +32,7 @@ export function mapStore(r) {
     closedDays: r.closed_days || [],
     lat: r.lat,
     lng: r.lng,
+    defaultPickupDeadlineMinutes: r.default_pickup_deadline_minutes ?? null,
     approvalStatus: r.approval_status,
     isSellingPaused: r.is_selling_paused,
     commissionRate: r.commission_rate,
@@ -91,6 +92,10 @@ export function mapOrder(r) {
     storeAddress: r.store_address,
     buyerName: r.buyer_name,
     safeNumber: r.safe_number,
+    // 픽업 마감 기준(정본) — create_order v3 이 주문 시점에 스냅샷한다.
+    pickupDeadlineMinutes: r.pickup_deadline_minutes ?? null,
+    pickupDeadlineAt: r.pickup_deadline_at ?? null,
+    // pickupStart/End 는 구 데이터·하위호환용(create_order v3 가 주문시각~마감시각으로 채운다)
     pickupStart: r.pickup_start,
     pickupEnd: r.pickup_end,
     orderedAt: r.ordered_at,
@@ -129,6 +134,7 @@ export function mapSettlement(r) {
     platformFee: r.platform_fee,
     pgFee: r.pg_fee,
     refund: r.refund,
+    couponBurden: r.coupon_burden || 0,   // 쿠폰 할인 판매자 부담액
     settlement: r.settlement_amount,
     status: r.status,
     date: r.settled_on,
@@ -153,6 +159,29 @@ export function mapNotice(r) {
     title: r.title,
     content: r.content,
     date: r.published_at,
+  };
+}
+
+export function mapCoupon(r) {
+  return {
+    id: r.id,
+    code: r.code,
+    name: r.name,
+    discountType: r.discount_type,        // 'amount' | 'rate'
+    discountValue: r.discount_value,
+    maxDiscountAmount: r.max_discount_amount,
+    minOrderAmount: r.min_order_amount,
+    endsOn: r.ends_on,
+    isActive: r.is_active,
+    allowStacking: r.allow_stacking,
+    costBearer: r.cost_bearer,             // 'platform' | 'seller' | 'shared'
+    platformShare: r.platform_share,
+    source: r.source,                      // 'admin' | 'seller'
+    sellerId: r.seller_id,
+    requestStatus: r.request_status,       // 'pending' | 'approved' | 'rejected' | null
+    rejectReason: r.reject_reason,
+    totalQuantity: r.total_quantity,
+    createdAt: r.created_at,
   };
 }
 
@@ -194,6 +223,7 @@ const STORE_COL = {
   phone: 'phone', category: 'category', description: 'description', notice: 'notice',
   tags: 'tags', storeImage: 'store_image', openHours: 'open_hours', closedDays: 'closed_days',
   lat: 'lat', lng: 'lng', isSellingPaused: 'is_selling_paused', bizCertImage: 'biz_cert_image',
+  defaultPickupDeadlineMinutes: 'default_pickup_deadline_minutes',
 };
 export function storeToDb(patch) {
   const out = {};
@@ -245,9 +275,51 @@ export async function fetchNotifications() {
   return (data || []).map(mapNotification);
 }
 export async function fetchNotices() {
-  const { data, error } = await supabase.from('notices').select('*').eq('is_published', true).order('published_at', { ascending: false });
+  // target: 관리자 웹이 공지 대상(all/buyer/seller)을 지정 — 판매자 앱은 전체·판매자 대상만 노출.
+  // (20260716 마이그레이션 이전 DB 에는 target 컬럼이 없으므로 실패 시 필터 없이 재조회)
+  let { data, error } = await supabase.from('notices').select('*')
+    .eq('is_published', true).in('target', ['all', 'seller'])
+    .order('published_at', { ascending: false });
+  if (error) {
+    ({ data, error } = await supabase.from('notices').select('*')
+      .eq('is_published', true).order('published_at', { ascending: false }));
+  }
   if (error) throw error;
   return (data || []).map(mapNotice);
+}
+// 본인이 발행 신청한 쿠폰(대기/승인/반려 포함). RLS: seller_id = auth.uid()
+export async function fetchMyCoupons() {
+  const seller_id = await currentUid();
+  const { data, error } = await supabase.from('coupons').select('*')
+    .eq('seller_id', seller_id).order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapCoupon);
+}
+// 쿠폰 발행 신청(서버가 부담주체/상태 강제). 성공 시 생성된 쿠폰 반환.
+export async function requestCoupon(d) {
+  const { data, error } = await supabase.rpc('request_coupon', {
+    p_name: d.name,
+    p_discount_type: d.discountType,
+    p_discount_value: d.discountValue,
+    p_min_order_amount: d.minOrderAmount ?? 0,
+    p_ends_on: d.endsOn || null,
+    p_allow_stacking: !!d.allowStacking,
+    p_max_discount_amount: d.discountType === 'rate' ? (d.maxDiscountAmount ?? null) : null,
+    p_total_quantity: d.totalQuantity ?? null,
+  });
+  if (error) throw error;
+  return mapCoupon(data);
+}
+// 관리자가 매장 지정 발급한 쿠폰(source='admin', pending) 수락/거절.
+// 수락 시 서버가 approved+활성화 처리 → 사용자 앱 상점 상세에 노출. 갱신된 쿠폰 반환.
+export async function respondCouponOffer(couponId, accept, reason = null) {
+  const { data, error } = await supabase.rpc('respond_coupon_offer', {
+    p_coupon_id: couponId,
+    p_accept: accept,
+    p_reason: reason,
+  });
+  if (error) throw error;
+  return mapCoupon(data);
 }
 
 // ───────── 변경 ─────────
@@ -273,19 +345,73 @@ export async function updateProductRow(id, patch) {
 export async function updateProductData(id, data) {
   const seller_id = await currentUid();
   const images = await uploadImages(data.images, seller_id, 'products');
-  const { error } = await supabase
-    .from('products')
-    .update(productToDb({ ...data, images, thumbnail: images[0] || null }))
-    .eq('id', id);
+  const patch = productToDb({ ...data, images, thumbnail: images[0] || null });
+
+  // 소비기한 만료로 자동 판매중지(status='paused', pause_reason='expiry')된 상품은
+  // 소비기한을 미래로 고쳐도 status 가 그대로여서 사용자앱에 다시 뜨지 않았다.
+  // 새 소비기한이 미래면 판매중으로 되살린다. (품절/관리자 숨김 상태는 건드리지 않는다)
+  if (patch.expiry_date && new Date(patch.expiry_date).getTime() > Date.now()) {
+    const { data: row } = await supabase
+      .from('products').select('status, pause_reason, stock').eq('id', id).maybeSingle();
+    const nextStock = patch.stock != null ? patch.stock : row?.stock;
+    if (row && row.status === 'paused' && row.pause_reason === 'expiry' && nextStock > 0) {
+      patch.status = 'selling';
+      patch.pause_reason = null;
+    }
+  }
+
+  const { error } = await supabase.from('products').update(patch).eq('id', id);
   if (error) throw error;
 }
 export async function deleteProductRow(id) {
   const { error } = await supabase.from('products').delete().eq('id', id);
   if (error) throw error;
 }
+// 주문 확인(confirm) / 취소(cancel) 전용. 픽업 완료는 complete_pickup RPC 를 쓴다.
 export async function updateOrderStatus(orderCode, sellerStatus, extra = {}) {
   const { error } = await supabase.from('orders').update({ seller_status: sellerStatus, ...extra }).eq('order_code', orderCode);
   if (error) throw error;
+}
+
+// ───────── QR 픽업 (20260728000000 마이그레이션 §6) ─────────
+// QR 값/직접 입력에서 주문번호(FP-####)만 추출. 딥링크·공백·소문자를 흡수한다.
+export function parseOrderCode(raw) {
+  const s = String(raw ?? '').trim().toUpperCase();
+  const m = s.match(/FP-\d+/);
+  return m ? m[0] : null;
+}
+
+// 스캔 직후 확인용 조회. security invoker + RLS 이므로 본인 매장 주문만 보인다(없으면 null).
+export async function lookupOrderForPickup(code) {
+  const p_order_code = parseOrderCode(code) || String(code ?? '').trim();
+  const { data, error } = await supabase.rpc('lookup_order_for_pickup', { p_order_code });
+  if (error) throw error;
+  const r = Array.isArray(data) ? data[0] : data;
+  if (!r) return null;
+  // 반환 컬럼이 orders 전체가 아닌 확인용 부분집합 → mapOrder 대신 전용 매핑.
+  return {
+    id: r.order_code,
+    productName: r.product_name,
+    quantity: r.quantity,
+    buyerName: r.buyer_name,
+    sellerStatus: r.seller_status,
+    paymentStatus: r.payment_status,
+    orderedAt: r.ordered_at,
+    pickupDeadlineMinutes: r.pickup_deadline_minutes ?? null,
+    pickupDeadlineAt: r.pickup_deadline_at ?? null,
+    amount: r.amount,
+    totalPrice: r.total_price,
+  };
+}
+
+// 픽업 완료(원자적 상태 전이 + 구매자 알림). 실패 시 error.message 가 대문자 상수
+// (NOT_AUTHENTICATED/INVALID_CODE/ORDER_NOT_FOUND/NOT_MY_ORDER/ALREADY_COMPLETED/
+//  ORDER_CANCELLED/NOT_PAID) — 호출부에서 분기해 한국어 안내로 바꾼다.
+export async function completePickupByQr(code) {
+  const p_order_code = parseOrderCode(code) || String(code ?? '').trim();
+  const { data, error } = await supabase.rpc('complete_pickup', { p_order_code });
+  if (error) throw error;
+  return mapOrder(data);
 }
 export async function updateReviewReplyRow(reviewId, reply) {
   const { error } = await supabase.from('reviews').update({

@@ -7,10 +7,18 @@ import {
   TextInput,
   Modal,
   Image,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { useApp, ORDER_SELLER_STATUS, PAYMENT_STATUS, formatPickupWindow } from '../store/appStore';
+import {
+  useApp,
+  ORDER_SELLER_STATUS,
+  PAYMENT_STATUS,
+  formatPickupDeadline,
+  formatDeadlineDuration,
+  pickupErrorMessage,
+} from '../store/appStore';
 import {
   ChevronLeft,
   Package,
@@ -21,6 +29,7 @@ import {
   XCircle,
   CheckCircle,
   MessageSquare,
+  QrCode,
 } from 'lucide-react-native';
 
 function formatDateTime(iso) {
@@ -36,10 +45,6 @@ function formatDateTime(iso) {
 
 function formatPrice(n) {
   return n.toLocaleString('ko-KR') + '원';
-}
-
-function generatePickupNumber(orderId) {
-  return orderId.replace('FP-', '').slice(-4);
 }
 
 export default function OrderDetailScreen() {
@@ -66,7 +71,18 @@ export default function OrderDetailScreen() {
   }
 
   const statusInfo = ORDER_SELLER_STATUS[order.sellerStatus];
-  const pickupNum = generatePickupNumber(order.id);
+
+  // 수동 픽업 완료(폴백). complete_pickup RPC 실패 사유를 그대로 안내한다.
+  async function handleCompletePickup() {
+    try {
+      await completePickup(order.id);
+      Alert.alert('픽업 완료', `${order.id} 주문의 픽업이 완료되었습니다.`, [
+        { text: '확인', onPress: () => navigation.goBack() },
+      ]);
+    } catch (e) {
+      Alert.alert('픽업 처리 불가', pickupErrorMessage(e));
+    }
+  }
 
   return (
     <View className="flex-1 bg-softgray">
@@ -149,8 +165,9 @@ export default function OrderDetailScreen() {
               <Hash color="#22A06B" size={16} />
               <Text className="font-bold text-primary text-[15px]">픽업번호</Text>
             </View>
-            <Text className="text-5xl font-bold text-primary tracking-widest">{pickupNum}</Text>
-            <Text className="text-primary/70 text-xs mt-2">구매자에게 이 번호를 알려주세요</Text>
+            {/* 구매자 QR 값과 동일한 전체 주문번호 — 육안 대조가 되도록 잘라내지 않는다 */}
+            <Text className="text-4xl font-bold text-primary tracking-wider">{order.id}</Text>
+            <Text className="text-primary/70 text-xs mt-2">구매자 QR 의 주문번호와 같은지 확인하세요</Text>
           </View>
         )}
 
@@ -165,9 +182,17 @@ export default function OrderDetailScreen() {
             <Text className="text-charcoal text-sm font-semibold">{order.buyerName}</Text>
           </View>
           <View className="flex-row justify-between mb-2">
-            <Text className="text-gray-500 text-sm">픽업 시간</Text>
-            <Text className="text-charcoal text-sm font-semibold">{formatPickupWindow(order.pickupStart, order.pickupEnd)}</Text>
+            <Text className="text-gray-500 text-sm">픽업 마감</Text>
+            <Text className="text-charcoal text-sm font-semibold">{formatPickupDeadline(order)}</Text>
           </View>
+          {!!order.pickupDeadlineMinutes && (
+            <View className="flex-row justify-between mb-2">
+              <Text className="text-gray-500 text-sm">픽업 조건</Text>
+              <Text className="text-charcoal text-sm font-semibold">
+                주문 후 {formatDeadlineDuration(order.pickupDeadlineMinutes)}
+              </Text>
+            </View>
+          )}
           <View className="flex-row justify-between">
             <Text className="text-gray-500 text-sm">결제 상태</Text>
             <Text className="text-primary text-sm font-semibold">{PAYMENT_STATUS[order.paymentStatus]?.label || order.paymentStatus}</Text>
@@ -238,13 +263,23 @@ export default function OrderDetailScreen() {
             </View>
           )}
           {order.sellerStatus === 'confirmed' && (
-            <TouchableOpacity
-              className="rounded-xl py-3.5 items-center"
-              style={{ backgroundColor: '#3B82F6' }}
-              onPress={() => { completePickup(order.id); navigation.goBack(); }}
-            >
-              <Text className="text-white font-semibold text-[15px]">픽업 완료 처리</Text>
-            </TouchableOpacity>
+            <View className="flex-row gap-3">
+              {/* QR 스캔이 정상 경로 — 수동 처리는 QR 훼손·카메라 불가 시 폴백 */}
+              <TouchableOpacity
+                className="flex-1 bg-primary rounded-xl py-3.5 items-center flex-row justify-center gap-2"
+                onPress={() => navigation.navigate('QrScan')}
+              >
+                <QrCode color="#fff" size={17} />
+                <Text className="text-white font-semibold text-[15px]">QR 스캔</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                className="flex-1 rounded-xl py-3.5 items-center"
+                style={{ backgroundColor: '#3B82F6' }}
+                onPress={handleCompletePickup}
+              >
+                <Text className="text-white font-semibold text-[15px]">픽업 완료 처리</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       )}

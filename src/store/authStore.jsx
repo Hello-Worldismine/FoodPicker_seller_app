@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Linking } from 'react-native';
 import { supabase } from '../lib/supabase';
+import { registerForPushNotifications, unregisterPushToken } from '../lib/push';
 
 // 이메일 확인/매직링크 딥링크(foodpicker-seller://...#access_token=...)에서 세션 복원
 function parseTokensFromUrl(url) {
@@ -61,11 +62,22 @@ export function AuthProvider({ children }) {
     return () => sub.remove();
   }, []);
 
+  // 로그인 상태가 되면 이 기기의 Expo 푸시 토큰을 seller_push_tokens 에 등록한다.
+  // (notifications INSERT 트리거가 이 토큰으로 쿠폰 지정발급·주문·정산 알림을 푸시한다)
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    registerForPushNotifications();
+  }, [session?.user?.id]);
+
   const value = {
     session,
     user: session?.user ?? null,
     loading,
-    signOut: () => supabase.auth.signOut(),
+    // 로그아웃 시 이 기기 토큰을 먼저 제거해 다음 로그인 계정에 알림이 새지 않게 한다.
+    signOut: async () => {
+      await unregisterPushToken();
+      return supabase.auth.signOut();
+    },
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
