@@ -214,8 +214,13 @@ export async function fetchStore() {
   return mapStore(data);
 }
 export async function fetchProducts() {
-  // API_SPEC §6.2: 최신 등록순(created_at desc)
-  const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+  const uid = await currentUid();
+  if (!uid) return [];
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .eq('seller_id', uid)
+    .order('created_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapProduct);
 }
