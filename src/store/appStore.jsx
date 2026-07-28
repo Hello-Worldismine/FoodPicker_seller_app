@@ -300,14 +300,16 @@ export function AppProvider({ children }) {
   };
   // 스캔 직후 확인 시트용 조회(본인 매장 주문이 아니면 null).
   const lookupOrderForPickup = (orderCode) => api.lookupOrderForPickup(orderCode);
-  const confirmOrder = async (orderId) => {
-    try { await api.updateOrderStatus(orderId, 'confirmed'); await reloadOrders(); }
-    catch (e) { console.warn('[주문 확인]', e.message); }
+  // 주문 확인/취소도 실패를 삼키지 않는다 — 삼키면 버튼이 먹통인 것처럼 보여
+  // 판매자가 원인을 알 수 없다(호출부에서 try/catch + Alert).
+  const confirmOrder = async (orderCode) => {
+    await api.updateOrderStatus(orderCode, 'confirmed');
+    await reloadOrders();
   };
-  const cancelOrder = async (orderId, reason) => {
+  const cancelOrder = async (orderCode, reason) => {
     const extra = reason && reason.trim() ? { cancel_reason: reason.trim() } : {};
-    try { await api.updateOrderStatus(orderId, 'cancelled', extra); await reloadOrders(); }
-    catch (e) { console.warn('[주문 취소]', e.message); }
+    await api.updateOrderStatus(orderCode, 'cancelled', extra);
+    await reloadOrders();
   };
 
   // ── 리뷰 ──

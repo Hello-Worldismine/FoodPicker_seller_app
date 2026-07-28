@@ -81,7 +81,16 @@ export default function HomeScreen() {
       `${order.id}\n${order.productName} ${order.quantity}개\n\n주문을 확인 처리하시겠습니까?`,
       [
         { text: '취소', style: 'cancel' },
-        { text: '주문 확인', onPress: () => confirmOrder(order.id) },
+        {
+          text: '주문 확인',
+          onPress: async () => {
+            try {
+              await confirmOrder(order.id);
+            } catch (e) {
+              Alert.alert('주문 확인 불가', pickupErrorMessage(e));
+            }
+          },
+        },
       ],
     );
   }

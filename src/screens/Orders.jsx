@@ -76,6 +76,24 @@ export default function OrdersScreen() {
     }
   }
 
+  // 주문 확인 / 취소도 실패 사유를 반드시 노출한다(무반응처럼 보이는 것 방지).
+  async function handleConfirmOrder(order) {
+    try {
+      await confirmOrder(order.id);
+    } catch (e) {
+      Alert.alert('주문 확인 불가', pickupErrorMessage(e));
+    }
+  }
+
+  async function handleCancelOrder(order) {
+    setCancelModal(null);
+    try {
+      await cancelOrder(order.id);
+    } catch (e) {
+      Alert.alert('주문 취소 불가', pickupErrorMessage(e));
+    }
+  }
+
   const filtered = orders.filter(o => o.sellerStatus === activeTab);
 
   return (
@@ -247,7 +265,7 @@ export default function OrdersScreen() {
                       <TouchableOpacity
                         activeOpacity={0.8}
                         style={{ flex: 1, backgroundColor: '#22A06B', borderRadius: 10, alignItems: 'center', paddingVertical: 13 }}
-                        onPress={(e) => { e.stopPropagation?.(); confirmOrder(order.id); }}
+                        onPress={(e) => { e.stopPropagation?.(); handleConfirmOrder(order); }}
                       >
                         <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>주문 확인</Text>
                       </TouchableOpacity>
@@ -377,7 +395,7 @@ export default function OrdersScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, backgroundColor: '#E5484D', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
-                onPress={() => { cancelOrder(cancelModal.id); setCancelModal(null); }}
+                onPress={() => handleCancelOrder(cancelModal)}
               >
                 <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>취소 승인</Text>
               </TouchableOpacity>

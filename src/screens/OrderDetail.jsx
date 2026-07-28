@@ -72,6 +72,25 @@ export default function OrderDetailScreen() {
 
   const statusInfo = ORDER_SELLER_STATUS[order.sellerStatus];
 
+  // 주문 확인 / 취소도 실패 사유를 반드시 노출한다(무반응처럼 보이는 것 방지).
+  async function handleConfirmOrder() {
+    try {
+      await confirmOrder(order.id);
+    } catch (e) {
+      Alert.alert('주문 확인 불가', pickupErrorMessage(e));
+    }
+  }
+
+  async function handleCancelOrder() {
+    setShowCancelModal(false);
+    try {
+      await cancelOrder(order.id, cancelReason);
+      navigation.goBack();
+    } catch (e) {
+      Alert.alert('주문 취소 불가', pickupErrorMessage(e));
+    }
+  }
+
   // 수동 픽업 완료(폴백). complete_pickup RPC 실패 사유를 그대로 안내한다.
   async function handleCompletePickup() {
     try {
@@ -256,7 +275,7 @@ export default function OrderDetailScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 className="flex-1 bg-primary rounded-xl py-3.5 items-center"
-                onPress={() => confirmOrder(order.id)}
+                onPress={handleConfirmOrder}
               >
                 <Text className="text-white font-semibold">주문 확인</Text>
               </TouchableOpacity>
@@ -314,11 +333,7 @@ export default function OrderDetailScreen() {
                 className="flex-1 rounded-xl py-3 items-center"
                 style={{ backgroundColor: cancelReason.trim() ? '#E5484D' : '#F0B4B6' }}
                 disabled={!cancelReason.trim()}
-                onPress={() => {
-                  setShowCancelModal(false);
-                  cancelOrder(order.id, cancelReason);
-                  navigation.goBack();
-                }}
+                onPress={handleCancelOrder}
               >
                 <Text className="text-white font-semibold">취소 처리</Text>
               </TouchableOpacity>

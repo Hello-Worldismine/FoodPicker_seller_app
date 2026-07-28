@@ -373,9 +373,22 @@ export async function deleteProductRow(id) {
   if (error) throw error;
 }
 // 주문 확인(confirm) / 취소(cancel) 전용. 픽업 완료는 complete_pickup RPC 를 쓴다.
+//
+// [주의] PostgREST 의 update 는 조건에 맞는 행이 0개여도 error 가 null 이다.
+//   RLS(orders_update: seller_id = auth.uid()) 에 걸리거나 order_code 가 틀리면
+//   "성공했지만 아무것도 안 바뀐" 상태가 되어 버튼이 먹통인 것처럼 보인다.
+//   → select() 로 갱신된 행을 돌려받아 0건이면 명시적으로 throw 한다.
 export async function updateOrderStatus(orderCode, sellerStatus, extra = {}) {
-  const { error } = await supabase.from('orders').update({ seller_status: sellerStatus, ...extra }).eq('order_code', orderCode);
+  const { data, error } = await supabase
+    .from('orders')
+    .update({ seller_status: sellerStatus, ...extra })
+    .eq('order_code', orderCode)
+    .select('order_code, seller_status');
   if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error(`주문(${orderCode})을 변경할 수 없습니다. 우리 매장 주문이 아니거나 이미 처리된 주문일 수 있습니다.`);
+  }
+  return mapOrder({ ...data[0] });
 }
 
 // ───────── QR 픽업 (20260728000000 마이그레이션 §6) ─────────
