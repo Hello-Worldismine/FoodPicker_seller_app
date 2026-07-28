@@ -42,6 +42,76 @@ function json(body: Record<string, unknown>, status = 200): Response {
   });
 }
 
+// ── service_role 키 해석 ─────────────────────────────────────────────────────
+// create_order 는 service_role 전용(EXECUTE 를 anon/authenticated 에서 회수)이다.
+// 따라서 이 함수가 service_role 이 아닌 역할로 DB 에 붙으면 주문 생성이
+// '42501 permission denied for function create_order' 로 실패한다.
+//
+// 이 프로젝트는 새 API 키 체계(JWT Signing Keys)로 전환되어 대시보드에서
+// SUPABASE_SERVICE_ROLE_KEY 가 DEPRECATED 로 표시된다. 레거시 키를 비활성화하면
+// 그 값이 무효해지고, 그때 조용히 anon 으로 강등되는 것이 가장 나쁜 실패 모드다.
+// → 레거시 키를 먼저 쓰고, 없거나 형태가 아니면 SUPABASE_SECRET_KEYS(JSON)에서 찾고,
+//   둘 다 없으면 즉시 500 으로 실패시켜 원인이 드러나게 한다.
+function isServiceRoleKey(v: string): boolean {
+  if (!v) return false;
+  if (v.startsWith("sb_secret_")) return true;         // 새 체계 secret key
+  const parts = v.split(".");
+  if (parts.length !== 3) return false;                // 레거시 JWT 형태 아님
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
+    return payload?.role === "service_role";
+  } catch {
+    return false;
+  }
+}
+
+function resolveServiceKey(): { key: string; source: string } | null {
+  const legacy = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim();
+  if (isServiceRoleKey(legacy)) return { key: legacy, source: "SUPABASE_SERVICE_ROLE_KEY" };
+
+  const raw = (Deno.env.get("SUPABASE_SECRET_KEYS") ?? "").trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const values: string[] = Array.isArray(parsed)
+        ? parsed.filter((v): v is string => typeof v === "string")
+        : parsed && typeof parsed === "object"
+        ? Object.values(parsed as Record<string, unknown>).filter((v): v is string => typeof v === "string")
+        : [];
+      const found = values.find(isServiceRoleKey);
+      if (found) return { key: found, source: "SUPABASE_SECRET_KEYS" };
+    } catch {
+      // 형식이 바뀌면 아래 폴백으로.
+    }
+  }
+  // 형태 검증에 실패했어도 값이 있으면 그대로 시도(검증 로직이 미래 키 형식을 모를 수 있음).
+  if (legacy) return { key: legacy, source: "SUPABASE_SERVICE_ROLE_KEY(unverified)" };
+  return null;
+}
+
+// service_role 클라이언트. Authorization/apikey 를 명시해 어떤 경로로도
+// 호출자 JWT 로 강등되지 않게 고정한다.
+function serviceClient(key: string): SupabaseClient {
+  return createClient(Deno.env.get("SUPABASE_URL")!, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${key}`, apikey: key } },
+  });
+}
+
+// create_order 실패 메시지 보강. 42501(permission denied)은 결제/재고 문제가 아니라
+// '함수가 service_role 로 실행되지 않았다'는 배포·키 설정 문제이므로 그대로 노출하지 않고
+// 원인을 로그에 남긴다(사용자에게 DB 내부 메시지를 그대로 보여주지 않는다).
+function describeRpcError(message: string, keySource: string): string {
+  if (/permission denied/i.test(message)) {
+    console.error(
+      `[toss-confirm] create_order 권한 거부(42501) — service_role 로 실행되지 않았습니다. keySource=${keySource}`,
+    );
+    return "서버 권한 설정 오류로 주문을 생성하지 못했습니다. 관리자에게 문의해주세요.(create_order 권한)";
+  }
+  return message;
+}
+
 // 구매자 본인(buyer_id=uid)의 paymentKey 주문 조회 — 멱등 가드/보상 전 재확인 공용.
 // error 를 삼키지 않는다: 조회 실패는 null 이 아니라 throw (가드 무력화 방지).
 async function findOrderByPaymentKey(
@@ -84,12 +154,18 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // ── 0) service_role 키 확보 (없으면 조용히 anon 으로 강등되지 않도록 즉시 실패) ──
+    const svc = resolveServiceKey();
+    if (!svc) {
+      console.error(
+        "[toss-confirm] service_role 키를 찾을 수 없습니다. " +
+          "SUPABASE_SERVICE_ROLE_KEY 또는 SUPABASE_SECRET_KEYS 를 확인하세요.",
+      );
+      return json({ error: "서버 설정 오류입니다.(service_role 키 없음) 관리자에게 문의해주세요." }, 500);
+    }
+
     // ── 1) 사용자 인증 (JWT → uid) ──────────────────────────────────────────
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { auth: { persistSession: false, autoRefreshToken: false } },
-    );
+    const supabase = serviceClient(svc.key);
     const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
     const { data: userData, error: userError } = await supabase.auth.getUser(jwt);
     if (userError || !userData?.user) {
@@ -146,7 +222,7 @@ Deno.serve(async (req) => {
         paymentKey: null, tossOrderId: null, method: null, paidAmount: 0,
       });
       if (rpcError) {
-        return json({ error: rpcError.message }, 400);
+        return json({ error: describeRpcError(rpcError.message, svc.source) }, 400);
       }
       return json({ order }, 200);
     }
@@ -260,7 +336,7 @@ Deno.serve(async (req) => {
       }
 
       // 취소 성공/실패를 사실대로 안내(실패 시 결제가 살아있을 수 있음 — 고객센터 안내).
-      const reason = rpcError.message;
+      const reason = describeRpcError(rpcError.message, svc.source);
       return json(
         cancelOk
           ? { error: `주문 생성에 실패해 결제를 취소했습니다. (${reason})` }

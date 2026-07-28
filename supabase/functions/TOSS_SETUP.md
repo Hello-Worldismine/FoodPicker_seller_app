@@ -75,6 +75,19 @@ FoodPicker 에 토스페이먼츠 결제를 연결하기 위해 **한 번만** �
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 는 Supabase 가 자동으로 넣어주므로
 따로 등록할 필요가 없습니다.
 
+> ⚠️ **레거시 API 키를 비활성화하지 마세요.**
+> 대시보드 → Settings → API Keys → "Legacy anon, service_role API keys" 의
+> **Disable JWT-based API keys** 를 누르면 `SUPABASE_SERVICE_ROLE_KEY` 가 무효해집니다.
+> 그러면 주문 생성 RPC(`create_order`)가 service_role 로 실행되지 않아
+> **"permission denied for function create_order"** 로 결제가 실패합니다.
+> 함수들은 `SUPABASE_SECRET_KEYS`(새 키 체계) 로 자동 폴백하도록 만들어 두었지만,
+> 키 체계를 바꿀 때는 반드시 결제 1건을 테스트해서 확인하세요.
+>
+> 만약 위 오류가 이미 났다면 대부분 **배포된 함수 코드가 레포보다 오래된 경우**입니다.
+> `supabase functions deploy toss-confirm toss-cancel --project-ref <ref>` 로 재배포하세요.
+> 함수는 service_role 키를 못 찾으면 조용히 강등되지 않고
+> "서버 설정 오류입니다.(service_role 키 없음)" 로 즉시 실패하며 로그에 원인을 남깁니다.
+
 ---
 
 ## ④ 사용자앱에 클라이언트 키 등록

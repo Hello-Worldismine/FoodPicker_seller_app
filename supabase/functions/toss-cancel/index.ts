@@ -36,6 +36,56 @@ function json(body: Record<string, unknown>, status = 200): Response {
   });
 }
 
+// ── service_role 키 해석 ─────────────────────────────────────────────────────
+// 이 프로젝트는 새 API 키 체계(JWT Signing Keys)로 전환되어 대시보드에서
+// SUPABASE_SERVICE_ROLE_KEY 가 DEPRECATED 로 표시된다. 레거시 키가 무효해지면
+// 조용히 anon 으로 강등되어 RLS/함수 권한에 막히는(42501) 것이 가장 나쁜 실패 모드다.
+// → 레거시 키 → SUPABASE_SECRET_KEYS(JSON) 순으로 찾고, 둘 다 없으면 즉시 실패한다.
+function isServiceRoleKey(v: string): boolean {
+  if (!v) return false;
+  if (v.startsWith("sb_secret_")) return true;         // 새 체계 secret key
+  const parts = v.split(".");
+  if (parts.length !== 3) return false;                // 레거시 JWT 형태 아님
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
+    return payload?.role === "service_role";
+  } catch {
+    return false;
+  }
+}
+
+function resolveServiceKey(): { key: string; source: string } | null {
+  const legacy = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim();
+  if (isServiceRoleKey(legacy)) return { key: legacy, source: "SUPABASE_SERVICE_ROLE_KEY" };
+
+  const raw = (Deno.env.get("SUPABASE_SECRET_KEYS") ?? "").trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const values: string[] = Array.isArray(parsed)
+        ? parsed.filter((v): v is string => typeof v === "string")
+        : parsed && typeof parsed === "object"
+        ? Object.values(parsed as Record<string, unknown>).filter((v): v is string => typeof v === "string")
+        : [];
+      const found = values.find(isServiceRoleKey);
+      if (found) return { key: found, source: "SUPABASE_SECRET_KEYS" };
+    } catch {
+      // 형식이 바뀌면 아래 폴백으로.
+    }
+  }
+  if (legacy) return { key: legacy, source: "SUPABASE_SERVICE_ROLE_KEY(unverified)" };
+  return null;
+}
+
+// Authorization/apikey 를 명시해 어떤 경로로도 호출자 JWT 로 강등되지 않게 고정한다.
+function serviceClient(key: string) {
+  return createClient(Deno.env.get("SUPABASE_URL")!, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${key}`, apikey: key } },
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -45,12 +95,18 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // ── 0) service_role 키 확보 (없으면 조용히 강등되지 않도록 즉시 실패) ────
+    const svc = resolveServiceKey();
+    if (!svc) {
+      console.error(
+        "[toss-cancel] service_role 키를 찾을 수 없습니다. " +
+          "SUPABASE_SERVICE_ROLE_KEY 또는 SUPABASE_SECRET_KEYS 를 확인하세요.",
+      );
+      return json({ error: "서버 설정 오류입니다.(service_role 키 없음) 관리자에게 문의해주세요." }, 500);
+    }
+
     // ── 1) 호출자 인증 ──────────────────────────────────────────────────────
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { auth: { persistSession: false, autoRefreshToken: false } },
-    );
+    const supabase = serviceClient(svc.key);
     const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
     const { data: userData, error: userError } = await supabase.auth.getUser(jwt);
     if (userError || !userData?.user) {
