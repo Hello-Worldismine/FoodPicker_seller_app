@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { useApp, ORDER_SELLER_STATUS } from '../store/appStore';
+import { useApp, ORDER_SELLER_STATUS, pickupErrorMessage, formatPickupDeadline } from '../store/appStore';
 import { CheckCircle, Clock, Package, User, AlertTriangle, Phone, QrCode, X } from 'lucide-react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
@@ -44,13 +44,11 @@ function formatDateTime(iso) {
   return `${mo}/${da} ${hh}:${mm}`;
 }
 
-function formatPickupRange(start, end) {
-  if (!start) return '';
-  const fmt = iso => {
-    const d = new Date(iso);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  };
-  return `픽업 ${fmt(start)}~${fmt(end)}`;
+// 픽업 표기 — 마감 시각(정본) 기준. formatPickupDeadline 이 pickupDeadlineAt 을 우선 쓰고
+// 없는 구 주문만 ordered_at + 남은 분으로 복원한다(마이그레이션 20260730000000).
+function formatPickupLabel(order) {
+  const label = formatPickupDeadline(order);
+  return label ? `픽업 마감 ${label}` : '';
 }
 
 function formatPrice(n) {
@@ -105,13 +103,31 @@ export default function OrdersScreen() {
       `${matched.productName}\n주문자: ${matched.buyerName}\n\n픽업 완료 처리하시겠습니까?`,
       [
         { text: '취소', style: 'cancel', onPress: () => setQrScanned(false) },
-        { text: '완료 처리', onPress: () => { completePickup(matched.id); setQrScanned(false); } },
+        {
+          text: '완료 처리',
+          onPress: () => {
+            runOrderAction(() => completePickup(matched.id), '픽업 처리 불가');
+            setQrScanned(false);
+          },
+        },
       ]
     );
   }
 
   function getCount(key) {
     return orders.filter(o => o.sellerStatus === key).length;
+  }
+
+  // ── 상태 전이 공통 핸들러 ────────────────────────────────────────────────
+  // appStore 의 confirmOrder/cancelOrder/completePickup 은 실패를 삼키지 않고 throw 한다
+  // (0행 갱신·RLS·이미 처리된 주문 등). 감싸지 않으면 unhandled rejection 이 되어
+  // 버튼이 '먹통' 으로 보이므로 반드시 사유를 노출한다.
+  async function runOrderAction(fn, failTitle) {
+    try {
+      await fn();
+    } catch (e) {
+      Alert.alert(failTitle, pickupErrorMessage(e));
+    }
   }
 
   const filtered = orders.filter(o => o.sellerStatus === activeTab);
@@ -230,7 +246,7 @@ export default function OrdersScreen() {
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                       <Clock color="#9CA3AF" size={13} />
                       <Text style={{ fontSize: 13, color: '#6B7280' }}>
-                        {formatPickupRange(order.pickupStart, order.pickupEnd)}
+                        {formatPickupLabel(order)}
                       </Text>
                     </View>
                   </View>
@@ -269,7 +285,10 @@ export default function OrdersScreen() {
                       <TouchableOpacity
                         activeOpacity={0.8}
                         style={{ flex: 1, backgroundColor: '#22A06B', borderRadius: 10, alignItems: 'center', paddingVertical: 13 }}
-                        onPress={(e) => { e.stopPropagation?.(); confirmOrder(order.id); }}
+                        onPress={(e) => {
+                          e.stopPropagation?.();
+                          runOrderAction(() => confirmOrder(order.id), '주문 확인 불가');
+                        }}
                       >
                         <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>주문 확인</Text>
                       </TouchableOpacity>
@@ -365,7 +384,11 @@ export default function OrdersScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, backgroundColor: '#22A06B', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
-                onPress={() => { completePickup(pickupModal.id); setPickupModal(null); }}
+                onPress={() => {
+                  const target = pickupModal;
+                  setPickupModal(null);
+                  runOrderAction(() => completePickup(target.id), '픽업 처리 불가');
+                }}
               >
                 <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>완료 확인</Text>
               </TouchableOpacity>
@@ -434,7 +457,11 @@ export default function OrdersScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, backgroundColor: '#E5484D', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
-                onPress={() => { cancelOrder(cancelModal.id); setCancelModal(null); }}
+                onPress={() => {
+                  const target = cancelModal;
+                  setCancelModal(null);
+                  runOrderAction(() => cancelOrder(target.id), '주문 취소 불가');
+                }}
               >
                 <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>취소 승인</Text>
               </TouchableOpacity>
