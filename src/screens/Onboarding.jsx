@@ -20,19 +20,11 @@ const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DAY_LABELS = { mon: '월', tue: '화', wed: '수', thu: '목', fri: '금', sat: '토', sun: '일' };
 const TOTAL_STEPS = 7;
 
-// 주문 후 픽업 마감(분) — 상품 등록 화면(ProductForm)과 동일한 선택지.
-const PICKUP_DEADLINE_OPTIONS = [
-  { label: '30분',     minutes: 30 },
-  { label: '1시간',    minutes: 60 },
-  { label: '1시간 반', minutes: 90 },
-  { label: '2시간',    minutes: 120 },
-];
-
 const STEP_META = {
   1: { title: '매장 기본 정보', sub: '매장명, 연락처, 카테고리를 설정해주세요' },
   2: { title: '매장 대표 사진', sub: '고객에게 보여줄 매장 사진을 등록해주세요 (필수)' },
   3: { title: '매장 소개', sub: '고객에게 전달하고 싶은 소개글을 입력해주세요' },
-  4: { title: '영업 · 픽업 시간', sub: '운영 요일·시간과 픽업 마감을 설정해주세요' },
+  4: { title: '영업 시간', sub: '매장을 운영하는 요일과 시간을 설정해주세요' },
   5: { title: '사업자 정보', sub: '대표자 및 사업자 정보를 입력해주세요' },
   6: { title: '매장 주소', sub: '고객이 방문할 매장 위치를 입력해주세요' },
   7: { title: '정산 계좌', sub: '판매 수익을 정산받을 계좌를 입력해주세요' },
@@ -86,9 +78,10 @@ export default function OnboardingScreen() {
   const [storeImage, setStoreImage] = useState(null);
   const [description, setDescription] = useState('');
 
-  // Step 4: 영업 시간 + 주문 후 픽업 마감(분)
+  // Step 4: 영업 시간
+  // (픽업 마감은 상품별 절대 시각(products.pickup_deadline_at)으로 바뀌어 매장 기본값을 받지 않는다.
+  //  영업 종료 시각이 상품 등록 화면의 마감 기본값으로 쓰인다 — ProductForm.defaultDeadlineDate)
   const [days, setDays] = useState(defaultDays);
-  const [pickupDeadlineMinutes, setPickupDeadlineMinutes] = useState(60);
   const [timePicker, setTimePicker] = useState(null);
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [timePickerValue, setTimePickerValue] = useState(new Date());
@@ -132,7 +125,7 @@ export default function OnboardingScreen() {
     if (step === 1) return name.trim().length > 0 && phone.trim().length > 0 && category.length > 0;
     if (step === 2) return !!storeImage;                        // 매장 대표 사진 필수
     if (step === 3) return true;
-    if (step === 4) return !!pickupDeadlineMinutes;             // 픽업 마감 필수
+    if (step === 4) return DAY_KEYS.some(k => days[k].isOpen);  // 영업일이 하루 이상 필요
     if (step === 5) return ownerName.trim().length > 0 && bizNumber.replace(/\D/g, '').length >= 10;
     if (step === 6) return address.trim().length > 0 && !geocoding;  // 매장 주소 필수
     if (step === 7) return !!(bankName.trim() && accountNumber.trim() && accountHolder.trim());
@@ -199,7 +192,6 @@ export default function OnboardingScreen() {
         address: address.trim(),
         lat: geo?.lat ?? undefined,
         lng: geo?.lng ?? undefined,
-        defaultPickupDeadlineMinutes: pickupDeadlineMinutes,
         bankName: bankName.trim(),
         accountNumber: accountNumber.trim(),
         accountHolder: accountHolder.trim(),
@@ -392,37 +384,14 @@ export default function OnboardingScreen() {
         </View>
       );
 
-      // Step 4: 영업 시간 + 주문 후 픽업 마감
+      // Step 4: 영업 시간
       case 4: return (
         <View>
-        <View style={{ marginBottom: 24 }}>
-          <Text style={S.label}>주문 후 픽업 마감 *</Text>
-          <Text style={{ fontSize: 13, color: '#9AA3AF', marginBottom: 12, lineHeight: 20 }}>
-            고객이 주문 후 몇 분 이내에 방문해야 하는지 설정합니다.{'\n'}
-            상품 등록 시 기본값으로 사용되며, 상품별로 변경할 수 있어요.
-          </Text>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            {PICKUP_DEADLINE_OPTIONS.map(({ label, minutes }) => {
-              const active = pickupDeadlineMinutes === minutes;
-              return (
-                <TouchableOpacity
-                  key={minutes}
-                  activeOpacity={1}
-                  onPress={() => setPickupDeadlineMinutes(minutes)}
-                  style={{
-                    flex: 1, alignItems: 'center', justifyContent: 'center',
-                    paddingVertical: 12, borderRadius: 10, borderWidth: 1,
-                    backgroundColor: active ? '#22A06B' : '#fff',
-                    borderColor: active ? '#22A06B' : '#E5E7EB',
-                  }}
-                >
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: active ? '#fff' : '#6B7280' }}>{label}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
         <Text style={S.label}>영업 시간 *</Text>
+        <Text style={{ fontSize: 13, color: '#9AA3AF', marginBottom: 12, lineHeight: 20 }}>
+          영업 종료 시각이 상품 등록 시 픽업 마감 기본값으로 사용됩니다.{'\n'}
+          픽업 마감은 상품마다 따로 지정할 수 있어요.
+        </Text>
         <View style={{ backgroundColor: '#fff', borderRadius: 16 }}>
           {DAY_KEYS.map((key, idx) => {
             const day = days[key];

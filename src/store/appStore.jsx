@@ -103,7 +103,10 @@ export function formatPickupWindow(start, end) {
   return `${dayLabelOf(s)} ${hhmm(s)}${end ? '~' + hhmm(new Date(end)) : ''}`;
 }
 
-// 픽업 마감(분) → '30분 이내' / '1시간 이내' / '1시간 30분 이내'
+// 주문의 '주문 후 남은 분' → '30분 이내' / '1시간 이내' / '1시간 30분 이내'
+// [주문 전용] orders.pickup_deadline_minutes 는 주문 시점 기준 남은 분(하위호환)이라 아직 의미가 있다.
+// 상품(products)의 마감은 절대 시각이 정본이므로 formatDeadlineClock(lib/format)을 쓴다 —
+// products.pickup_deadline_minutes 는 DEPRECATED 다(마이그레이션 20260730000000).
 export function formatDeadlineDuration(minutes) {
   const label = formatDeadlineMinutes(minutes);
   return label ? `${label} 이내` : '';

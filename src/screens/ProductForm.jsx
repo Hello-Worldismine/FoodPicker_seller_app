@@ -49,12 +49,8 @@ const INTERVAL_PRESETS = [
   { label: '2시간', minutes: 120 },
   { label: '3시간', minutes: 180 },
 ];
-const PICKUP_DEADLINE_OPTIONS = [
-  { label: '30분',    minutes: 30 },
-  { label: '1시간',   minutes: 60 },
-  { label: '1시간 반', minutes: 90 },
-  { label: '2시간',   minutes: 120 },
-];
+// Date.getDay() 인덱스(0=일) → stores.open_hours 의 요일 키
+const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function formatDate(date) {
   if (!date) return '';
@@ -82,6 +78,28 @@ function parseTimeToDate(timeStr) {
   const [h, m] = timeStr.split(':').map(Number);
   const d = new Date();
   d.setHours(h, m, 0, 0);
+  return d;
+}
+
+// 오늘의 매장 영업 종료 시각('HH:MM')을 구한다.
+// storeInfo.openHours 구조: { allSame, sameOpen, sameClose, days: { mon: { open, close, isOpen }, ... } }
+//   · allSame 이면 요일 구분 없이 sameClose
+//   · 아니면 days[오늘 요일].close (그 요일이 영업일일 때만)
+//   · 오늘이 휴무이거나 값이 없으면 21:00
+function resolveTodayCloseTime(openHours) {
+  if (openHours?.allSame && openHours?.sameClose) return openHours.sameClose;
+  const today = openHours?.days?.[WEEKDAY_KEYS[new Date().getDay()]];
+  if (today?.isOpen && today?.close) return today.close;
+  return '21:00';
+}
+
+// 픽업 마감 기본값 = '오늘 영업 종료 시각'. 이미 지났으면 '내일 같은 시각'.
+// (등록 직후 마감이 지난 상품 → 서버 expire_products() 가 곧바로 판매중지하는 것을 막는다)
+function defaultDeadlineDate(openHours) {
+  const [h, m] = resolveTodayCloseTime(openHours).split(':').map(Number);
+  const d = new Date();
+  d.setHours(Number.isFinite(h) ? h : 21, Number.isFinite(m) ? m : 0, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
   return d;
 }
 
@@ -151,10 +169,18 @@ export default function ProductFormScreen() {
   );
   const [storage, setStorage] = useState(editProduct?.storage?.replace(' 보관', '') || '냉장');
   const [storageDetail, setStorageDetail] = useState(editProduct?.storageDetail || '');
-  // 신규 등록 시 기본값 = 입점 신청 때 설정한 매장 기본 픽업 마감(stores.default_pickup_deadline_minutes)
-  const [pickupDeadlineMinutes, setPickupDeadlineMinutes] = useState(
-    editProduct?.pickupDeadlineMinutes || storeInfo?.defaultPickupDeadlineMinutes || 60
+  // 픽업 마감 = '마감 시각'(절대, products.pickup_deadline_at). 구 '주문 후 N분' 방식 폐기.
+  //   · 수정 모드: 기존 마감 시각
+  //   · 신규 등록: 오늘 매장 영업 종료 시각(지났으면 내일 같은 시각)
+  // 최초 렌더에서 한 번만 계산한다(매장 정보가 늦게 로드돼 입력값을 덮어쓰지 않도록).
+  const initialDeadline = useMemo(
+    () => (editProduct?.pickupDeadlineAt
+      ? new Date(editProduct.pickupDeadlineAt)
+      : defaultDeadlineDate(storeInfo?.openHours)),
+    [], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const [pickupDeadlineDate, setPickupDeadlineDate] = useState(formatDate(initialDeadline));
+  const [pickupDeadlineTime, setPickupDeadlineTime] = useState(formatTime(initialDeadline));
   const [description, setDescription] = useState(editProduct?.description || '');
   const [composition, setComposition] = useState(editProduct?.composition || '');
   const [allergens, setAllergens] = useState(editProduct?.allergens || []);
@@ -216,6 +242,8 @@ export default function ProductFormScreen() {
     let currentVal = new Date();
     if (target === 'expiryDate') currentVal = parseDateStr(expiryDate);
     if (target === 'expiryTime') currentVal = parseTimeToDate(expiryTime);
+    if (target === 'deadlineDate') currentVal = parseDateStr(pickupDeadlineDate);
+    if (target === 'deadlineTime') currentVal = parseTimeToDate(pickupDeadlineTime);
     setPickerValue(currentVal);
     setPickerTarget(target);
     setPickerMode(mode);
@@ -227,6 +255,8 @@ export default function ProductFormScreen() {
     if (!date) return;
     if (pickerTarget === 'expiryDate') setExpiryDate(formatDate(date));
     if (pickerTarget === 'expiryTime') setExpiryTime(formatTime(date));
+    if (pickerTarget === 'deadlineDate') setPickupDeadlineDate(formatDate(date));
+    if (pickerTarget === 'deadlineTime') setPickupDeadlineTime(formatTime(date));
   }
 
   async function pickImage() {
@@ -294,7 +324,6 @@ export default function ProductFormScreen() {
     if (!stock || isNaN(parseInt(stock))) { Alert.alert('오류', '판매 수량을 입력해주세요.'); return; }
 
     if (!images.length) { Alert.alert('오류', '상품 사진을 1장 이상 등록해주세요.'); return; }
-    if (!pickupDeadlineMinutes) { Alert.alert('오류', '주문 후 픽업 마감을 선택해주세요.'); return; }
 
     const [ey, em, ed] = expiryDate.split('-').map(Number);
     const [eth, etm] = expiryTime.split(':').map(Number);
@@ -304,6 +333,22 @@ export default function ProductFormScreen() {
     // 사용자앱에서 사라진다 → 등록 단계에서 차단한다.
     if (expDate.getTime() <= Date.now()) {
       Alert.alert('소비기한 확인', '소비기한이 현재 시각보다 이후여야 합니다.\n소비기한이 지난 상품은 자동으로 판매중지 처리됩니다.');
+      return;
+    }
+
+    const [dy, dm, dd] = pickupDeadlineDate.split('-').map(Number);
+    const [dth, dtm] = pickupDeadlineTime.split(':').map(Number);
+    const deadlineDate = new Date(dy, dm - 1, dd, dth, dtm, 0);
+
+    // 마감이 지난 상품은 주문 자체가 거부되고(create_order: 'pickup deadline passed')
+    // expire_products() 가 pause_reason='pickup_closed' 로 판매중지시킨다 → 여기서 차단.
+    if (deadlineDate.getTime() <= Date.now()) {
+      Alert.alert('픽업 마감 확인', '픽업 마감은 현재 시각 이후여야 합니다.');
+      return;
+    }
+    // DB 제약(products_pickup_deadline_at_chk)과 동일 — 소비기한 이후 픽업은 불가.
+    if (deadlineDate.getTime() > expDate.getTime()) {
+      Alert.alert('픽업 마감 확인', '픽업 마감은 소비기한을 넘을 수 없습니다.');
       return;
     }
 
@@ -331,7 +376,7 @@ export default function ProductFormScreen() {
       expiryDate: expDate.toISOString(),
       storage,
       storageDetail: storageDetail.trim(),
-      pickupDeadlineMinutes,
+      pickupDeadlineAt: deadlineDate.toISOString(),
       description: description.trim(),
       composition: composition.trim(),
       allergens: mergedAllergens,
@@ -670,29 +715,30 @@ export default function ProductFormScreen() {
             />
           </View>
 
-          {/* 주문 후 픽업 마감 */}
+          {/* 픽업 마감 시각 */}
           <View style={card}>
-            <Text style={cardTitle}>주문 후 픽업 마감 <Text style={{ color: '#E5484D' }}>*</Text></Text>
-            <Text style={[fieldLabel, { marginBottom: 12 }]}>주문 후 몇 분 이내로 방문해야 하나요?</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {PICKUP_DEADLINE_OPTIONS.map(({ label, minutes }) => (
-                <TouchableOpacity
-                  key={minutes}
-                  activeOpacity={1}
-                  onPress={() => setPickupDeadlineMinutes(minutes)}
-                  style={{
-                    flex: 1, alignItems: 'center', justifyContent: 'center',
-                    paddingVertical: 12, borderRadius: 10, borderWidth: 1,
-                    backgroundColor: pickupDeadlineMinutes === minutes ? '#22A06B' : '#fff',
-                    borderColor: pickupDeadlineMinutes === minutes ? '#22A06B' : '#E5E7EB',
-                  }}
-                >
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: pickupDeadlineMinutes === minutes ? '#fff' : '#6B7280' }}>
-                    {label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+            <Text style={cardTitle}>픽업 마감 <Text style={{ color: '#E5484D' }}>*</Text></Text>
+            <Text style={[fieldLabel, { marginBottom: 12 }]}>이 시각까지 고객이 매장에 방문해야 합니다.</Text>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                onPress={() => openPicker('deadlineDate', 'date')}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
+              >
+                <Text style={{ fontSize: 15, color: '#1F2933' }}>{pickupDeadlineDate}</Text>
+                <Calendar color="#9AA3AF" size={15} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => openPicker('deadlineTime', 'time')}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
+              >
+                <Text style={{ fontSize: 15, color: '#1F2933' }}>{pickupDeadlineTime}</Text>
+                <Clock color="#9AA3AF" size={15} />
+              </TouchableOpacity>
             </View>
+            <Text style={{ fontSize: 12, color: '#9AA3AF', marginTop: 10, lineHeight: 18 }}>
+              기본값은 오늘 매장 영업 종료 시각입니다. 소비기한 이후로는 설정할 수 없으며,
+              마감 30분 전 고객에게 알림이 발송됩니다.
+            </Text>
           </View>
 
           {/* 상품 설명 */}
@@ -870,8 +916,8 @@ export default function ProductFormScreen() {
                   value={pickerValue}
                   mode={pickerMode}
                   display="spinner"
-                  // 소비기한은 과거 날짜를 고를 수 없게 한다(등록 직후 자동 판매중지 방지)
-                  minimumDate={pickerTarget === 'expiryDate' ? new Date() : undefined}
+                  // 소비기한·픽업 마감은 과거 날짜를 고를 수 없게 한다(등록 직후 자동 판매중지 방지)
+                  minimumDate={pickerMode === 'date' ? new Date() : undefined}
                   onChange={(e, d) => { if (d) { setPickerValue(d); handlePickerChange(e, d); } }}
                   locale="ko-KR"
                 />
@@ -883,7 +929,7 @@ export default function ProductFormScreen() {
             value={pickerValue}
             mode={pickerMode}
             display="default"
-            minimumDate={pickerTarget === 'expiryDate' ? new Date() : undefined}
+            minimumDate={pickerMode === 'date' ? new Date() : undefined}
             onChange={(e, d) => { handlePickerChange(e, d); }}
           />
         )

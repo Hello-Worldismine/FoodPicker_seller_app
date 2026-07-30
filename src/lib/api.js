@@ -62,6 +62,8 @@ export function mapProduct(r) {
     lastReducedAt: r.last_reduced_at,
     createdAt: r.created_at,
     stock: r.stock,
+    // 픽업 마감 정본 = 절대 시각(pickup_deadline_at). minutes 는 구 데이터 표시 호환용.
+    pickupDeadlineAt: r.pickup_deadline_at ?? null,
     pickupDeadlineMinutes: r.pickup_deadline_minutes ?? null,
     expiryDate: r.expiry_date,
     storage: r.storage,
@@ -203,7 +205,9 @@ function productToDb(d) {
     reduction_amount: d.reductionAmount ?? null,
     interval_minutes: d.intervalMinutes ?? null,
     stock: d.stock,
-    pickup_deadline_minutes: d.pickupDeadlineMinutes ?? null,
+    // 픽업 마감은 '마감 시각'(절대)만 저장한다. pickup_deadline_minutes 는 DEPRECATED —
+    // 주문 시점의 '남은 분'은 create_order v4 가 서버에서 계산해 채운다.
+    pickup_deadline_at: d.pickupDeadlineAt ?? null,
     expiry_date: d.expiryDate,
     storage: d.storage,
     storage_detail: d.storageDetail,
@@ -225,6 +229,8 @@ const STORE_COL = {
   phone: 'phone', category: 'category', description: 'description', notice: 'notice',
   tags: 'tags', storeImage: 'store_image', openHours: 'open_hours', closedDays: 'closed_days',
   lat: 'lat', lng: 'lng', isSellingPaused: 'is_selling_paused', bizCertImage: 'biz_cert_image',
+  // [DEPRECATED] 매장 기본 픽업 마감(분) — 마감이 상품별 절대 시각으로 바뀌어 더 이상 쓰지 않는다.
+  // 구 클라이언트/구 데이터 호환을 위해 매핑만 남긴다(앱에서 patch 하지 않는다).
   defaultPickupDeadlineMinutes: 'default_pickup_deadline_minutes',
 };
 export function storeToDb(patch) {
@@ -331,8 +337,13 @@ export async function respondCouponOffer(couponId, accept, reason = null) {
 export async function insertProduct(store, data) {
   const seller_id = await currentUid();
   const images = await uploadImages(data.images, seller_id, 'products');
+  const cols = productToDb({ ...data, images, thumbnail: images[0] || null });
+  // 픽업 마감 시각은 필수값이다 — 비어 있으면 create_order 가 소비기한/1시간 뒤로 대체하므로
+  // 판매자가 의도하지 않은 마감이 잡힌다. 구 화면 경로로 값이 없으면 소비기한을 마감으로 본다
+  // (마이그레이션 20260730000000 의 백필 규칙과 동일. DB 제약: 마감 <= 소비기한).
+  if (!cols.pickup_deadline_at) cols.pickup_deadline_at = data.expiryDate ?? null;
   const row = {
-    ...productToDb({ ...data, images, thumbnail: images[0] || null }),
+    ...cols,
     seller_id,
     store_id: store?.id,
     status: 'selling',
@@ -352,14 +363,24 @@ export async function updateProductData(id, data) {
   const images = await uploadImages(data.images, seller_id, 'products');
   const patch = productToDb({ ...data, images, thumbnail: images[0] || null });
 
-  // 소비기한 만료로 자동 판매중지(status='paused', pause_reason='expiry')된 상품은
-  // 소비기한을 미래로 고쳐도 status 가 그대로여서 사용자앱에 다시 뜨지 않았다.
-  // 새 소비기한이 미래면 판매중으로 되살린다. (품절/관리자 숨김 상태는 건드리지 않는다)
+  // 마감 시각을 넘기지 않은 호출(구 화면 경로)이 기존 마감을 null 로 덮어쓰지 않게 한다.
+  if (patch.pickup_deadline_at == null) delete patch.pickup_deadline_at;
+
+  // 자동 판매중지(status='paused')된 상품은 기한을 미래로 고쳐도 status 가 그대로여서
+  // 사용자앱에 다시 뜨지 않았다. 서버 expire_products() 가 중지시키는 두 사유
+  //   · pause_reason='expiry'        → 소비기한 경과
+  //   · pause_reason='pickup_closed' → 픽업 마감 경과 (20260730000000)
+  // 에 대해, 소비기한과 픽업 마감이 모두 미래일 때만 판매중으로 되살린다.
+  // (품절/관리자 숨김 상태는 건드리지 않는다)
   if (patch.expiry_date && new Date(patch.expiry_date).getTime() > Date.now()) {
     const { data: row } = await supabase
-      .from('products').select('status, pause_reason, stock').eq('id', id).maybeSingle();
+      .from('products').select('status, pause_reason, stock, pickup_deadline_at').eq('id', id).maybeSingle();
     const nextStock = patch.stock != null ? patch.stock : row?.stock;
-    if (row && row.status === 'paused' && row.pause_reason === 'expiry' && nextStock > 0) {
+    // 마감은 이번 patch 값이 우선, 없으면 현재 저장값 기준으로 판단한다.
+    const nextDeadline = patch.pickup_deadline_at ?? row?.pickup_deadline_at;
+    const futureDeadline = !nextDeadline || new Date(nextDeadline).getTime() > Date.now();
+    const autoPaused = row?.pause_reason === 'expiry' || row?.pause_reason === 'pickup_closed';
+    if (row && row.status === 'paused' && autoPaused && futureDeadline && nextStock > 0) {
       patch.status = 'selling';
       patch.pause_reason = null;
     }

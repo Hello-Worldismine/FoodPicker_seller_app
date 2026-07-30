@@ -20,7 +20,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../store/appStore';
 import { useAuth } from '../store/authStore';
 import { uploadImageIfLocal, isUnsupportedImageUrl } from '../lib/storage';
-import { formatDeadlineMinutes } from '../lib/format';
+import { formatDeadlineClock } from '../lib/format';
 import DaumPostcodeModal from '../components/DaumPostcodeModal';
 import NaverGeocoder from '../components/NaverGeocoder';
 import {
@@ -1577,14 +1577,15 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
     navigation?.navigate('Reviews');
   }
 
-  // 픽업 기준은 '주문 후 N분 이내'(products.pickup_deadline_minutes)다.
-  // 예전 pickupStart/End 기반 표기는 해당 컬럼을 더 이상 채우지 않아 항상 비어 있었다.
-  const deadlineMinutes =
-    sellingProducts.find(p => p.pickupDeadlineMinutes > 0)?.pickupDeadlineMinutes
-    || storeInfo.defaultPickupDeadlineMinutes
-    || null;
-  const deadlineLabel = formatDeadlineMinutes(deadlineMinutes);
-  const pickupTime = deadlineLabel ? `주문 후 ${deadlineLabel} 이내` : null;
+  // 픽업 기준은 상품별 '픽업 마감 시각'(products.pickup_deadline_at)이다.
+  // 구 '주문 후 N분'(pickup_deadline_minutes)·매장 기본값(default_pickup_deadline_minutes)은 폐기.
+  // 판매중 상품 중 가장 이른 마감을 대표로 보여준다(고객이 가장 먼저 놓치는 시각).
+  const nearestDeadlineMs = sellingProducts.reduce((min, p) => {
+    const t = p.pickupDeadlineAt ? new Date(p.pickupDeadlineAt).getTime() : NaN;
+    if (!Number.isFinite(t)) return min;
+    return min == null || t < min ? t : min;
+  }, null);
+  const pickupTime = nearestDeadlineMs != null ? formatDeadlineClock(nearestDeadlineMs) : null;
 
   function buildSummaryHours() {
     const days = storeInfo.openHours?.days;
@@ -1666,7 +1667,7 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
             <PreviewInfoRow icon={<Phone color="#9AA3AF" size={15} />} label="전화" value={storeInfo.phone} />
             <PreviewInfoRow icon={<Clock color="#9AA3AF" size={15} />} label="영업시간" value={buildSummaryHours()} />
             {pickupTime && (
-              <PreviewInfoRow icon={<Clock color="#FF8A3D" size={15} />} label="픽업시간" value={pickupTime} highlight />
+              <PreviewInfoRow icon={<Clock color="#FF8A3D" size={15} />} label="픽업 마감" value={pickupTime} highlight />
             )}
           </View>
 

@@ -48,7 +48,31 @@ export function formatPrice(n) {
   return Number.isFinite(v) ? v.toLocaleString('ko-KR') : '0';
 }
 
+// 픽업 마감 시각(절대) → '오늘 21:00까지' / '내일 09:00까지' / '7.31 09:00까지'.
+// 정본 표기 헬퍼 — products.pickup_deadline_at / orders.pickup_deadline_at 용
+// (마이그레이션 20260730000000: '주문 후 N분' 상대값 → '마감 시각' 절대값).
+// withSuffix=false 면 '까지' 를 생략한다('픽업 마감 오늘 21:00' 처럼 앞말이 붙는 자리용).
+export function formatDeadlineClock(value, withSuffix = true) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d);  day.setHours(0, 0, 0, 0);
+  const diffDay = Math.round((day - today) / 86400000);
+  const dayLabel =
+    diffDay === 0 ? '오늘'
+      : diffDay === 1 ? '내일'
+        : diffDay === -1 ? '어제'
+          : `${d.getMonth() + 1}.${d.getDate()}`;
+
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${dayLabel} ${hhmm}${withSuffix ? '까지' : ''}`;
+}
+
 // 주문 후 픽업 마감(분) → '30분' / '1시간' / '1시간 30분'
+// [구 데이터용] 상품 마감은 formatDeadlineClock(절대 시각)을 쓴다. 주문의
+// pickup_deadline_minutes(주문 시점 기준 남은 분)만 이 포맷을 계속 사용한다.
 export function formatDeadlineMinutes(minutes) {
   const m = Number(minutes);
   if (!Number.isFinite(m) || m <= 0) return '';
