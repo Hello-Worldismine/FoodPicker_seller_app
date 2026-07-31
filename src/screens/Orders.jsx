@@ -1,17 +1,24 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
+  TextInput,
   Modal,
   Linking,
   Alert,
   StyleSheet,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import { useApp, ORDER_SELLER_STATUS, pickupErrorMessage, formatPickupDeadline } from '../store/appStore';
+import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
+import {
+  useApp,
+  ORDER_SELLER_STATUS,
+  CANCEL_REQUEST_STATUS,
+  pickupErrorMessage,
+  formatPickupDeadline,
+} from '../store/appStore';
 import { CheckCircle, Clock, Package, User, AlertTriangle, Phone, QrCode, X } from 'lucide-react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
@@ -28,11 +35,23 @@ function callSafeNumber(number) {
 }
 
 const TABS = [
-  { key: 'new',       label: '신규주문', color: '#FF8A3D' },
-  { key: 'confirmed', label: '픽업대기', color: '#22A06B' },
-  { key: 'completed', label: '픽업완료', color: '#9AA3AF' },
-  { key: 'cancelled', label: '취소요청', color: '#E5484D' },
+  { key: 'new',             label: '신규주문', color: '#FF8A3D' },
+  { key: 'confirmed',       label: '픽업대기', color: '#22A06B' },
+  { key: 'completed',       label: '픽업완료', color: '#9AA3AF' },
+  { key: 'cancelRequested', label: '취소요청', color: '#E5484D' },
+  { key: 'cancelled',       label: '취소완료', color: '#9AA3AF' },
 ];
+
+// 탭 필터 술어 — '취소요청' 은 seller_status 가 아니라 cancel_request_status 플래그다
+// (마이그레이션 20260731000000: 요청 중에도 seller_status 는 new/confirmed 그대로).
+// 요청 대기 건이 신규주문·픽업대기 탭에 중복 노출되지 않도록 그쪽에서 제외한다.
+const TAB_FILTER = {
+  new:             o => o.sellerStatus === 'new' && o.cancelRequestStatus !== 'requested',
+  confirmed:       o => o.sellerStatus === 'confirmed' && o.cancelRequestStatus !== 'requested',
+  completed:       o => o.sellerStatus === 'completed',
+  cancelRequested: o => o.cancelRequestStatus === 'requested',
+  cancelled:       o => o.sellerStatus === 'cancelled',
+};
 
 function formatDateTime(iso) {
   if (!iso) return '';
@@ -57,15 +76,31 @@ function formatPrice(n) {
 
 export default function OrdersScreen() {
   const navigation = useNavigation();
+  const route = useRoute();
   const insets = useSafeAreaInsets();
-  const { orders, confirmOrder, completePickup, cancelOrder } = useApp();
+  const { orders, confirmOrder, completePickup, approveCancelRequest, rejectCancelRequest } = useApp();
 
   const [activeTab, setActiveTab] = useState('new');
   const [pickupModal, setPickupModal] = useState(null);
-  const [cancelModal, setCancelModal] = useState(null);
+  const [cancelModal, setCancelModal] = useState(null);   // 취소요청 승인 확인
+  const [rejectModal, setRejectModal] = useState(null);   // 취소요청 거절(사유 입력)
+  const [rejectReason, setRejectReason] = useState('');
   const [qrScanVisible, setQrScanVisible] = useState(false);
   const [qrScanned, setQrScanned] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+
+  // 홈의 '취소요청 N건' 카드에서 넘어오면 해당 탭을 연다.
+  // 탭 화면의 params 는 한 번 들어오면 남아 있어(다음에 탭바로 들어와도 탭이 강제로 바뀐다)
+  // 적용 직후 비운다.
+  useFocusEffect(
+    useCallback(() => {
+      const next = route.params?.initialTab;
+      if (next && TAB_FILTER[next]) {
+        setActiveTab(next);
+        navigation.setParams({ initialTab: undefined });
+      }
+    }, [route.params?.initialTab, navigation])
+  );
 
   function openQrScanner() {
     if (!cameraPermission?.granted) {
@@ -115,7 +150,8 @@ export default function OrdersScreen() {
   }
 
   function getCount(key) {
-    return orders.filter(o => o.sellerStatus === key).length;
+    const predicate = TAB_FILTER[key];
+    return predicate ? orders.filter(predicate).length : 0;
   }
 
   // ── 상태 전이 공통 핸들러 ────────────────────────────────────────────────
@@ -130,7 +166,7 @@ export default function OrdersScreen() {
     }
   }
 
-  const filtered = orders.filter(o => o.sellerStatus === activeTab);
+  const filtered = orders.filter(TAB_FILTER[activeTab] || (() => false));
 
   return (
     <View style={{ flex: 1, backgroundColor: '#F5F6F7' }}>
@@ -188,12 +224,12 @@ export default function OrdersScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Cancelled banner */}
-        {activeTab === 'cancelled' && getCount('cancelled') > 0 && (
+        {/* 취소요청 대기 배너 */}
+        {activeTab === 'cancelRequested' && getCount('cancelRequested') > 0 && (
           <View style={{ backgroundColor: '#FFF0F0', borderRadius: 10, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <AlertTriangle color="#E5484D" size={16} />
-            <Text style={{ fontSize: 13, color: '#E5484D', fontWeight: '600' }}>
-              취소 요청 접수됨 — 확인이 필요합니다
+            <Text style={{ fontSize: 13, color: '#E5484D', fontWeight: '600', flex: 1, lineHeight: 19 }}>
+              취소 요청 · 승인 시 수수료 없이 전액 환불됩니다
             </Text>
           </View>
         )}
@@ -207,7 +243,11 @@ export default function OrdersScreen() {
           </View>
         ) : (
           filtered.map(order => {
-            const statusInfo = ORDER_SELLER_STATUS[order.sellerStatus];
+            // 취소요청 대기 건은 seller_status(신규주문/픽업대기) 대신 요청 상태를 배지로 보여준다.
+            const cancelRequested = order.cancelRequestStatus === 'requested';
+            const statusInfo = cancelRequested
+              ? CANCEL_REQUEST_STATUS.requested
+              : ORDER_SELLER_STATUS[order.sellerStatus];
             return (
               <TouchableOpacity
                 key={order.id}
@@ -269,8 +309,20 @@ export default function OrdersScreen() {
                     </TouchableOpacity>
                   )}
 
+                  {/* 취소요청 상세 — 요청 시각 + 구매자가 입력한 사유 */}
+                  {cancelRequested && (
+                    <View style={{ backgroundColor: '#FFF0F0', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 11, marginBottom: 12 }}>
+                      <Text style={{ fontSize: 12, color: '#E5484D', fontWeight: '700' }}>
+                        {formatDateTime(order.cancelRequestedAt)} 취소 요청
+                      </Text>
+                      <Text style={{ fontSize: 13, color: '#374151', marginTop: 4, lineHeight: 19 }}>
+                        {order.cancelRequestReason || '사유가 입력되지 않았습니다.'}
+                      </Text>
+                    </View>
+                  )}
+
                   {/* Pickup number (confirmed only) */}
-                  {order.sellerStatus === 'confirmed' && (
+                  {order.sellerStatus === 'confirmed' && !cancelRequested && (
                     <View style={{ backgroundColor: '#E9F8F1', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                       <Text style={{ fontSize: 13, color: '#22A06B' }}>픽업번호</Text>
                       <Text style={{ fontSize: 20, fontWeight: '800', color: '#1F2933', letterSpacing: 0.5 }}>
@@ -280,7 +332,25 @@ export default function OrdersScreen() {
                   )}
 
                   {/* Action buttons */}
-                  {order.sellerStatus === 'new' && (
+                  {cancelRequested && (
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        style={{ flex: 1, backgroundColor: '#E5484D', borderRadius: 10, alignItems: 'center', paddingVertical: 13 }}
+                        onPress={(e) => { e.stopPropagation?.(); setCancelModal(order); }}
+                      >
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>취소 승인</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        style={{ flex: 1, backgroundColor: '#fff', borderRadius: 10, alignItems: 'center', paddingVertical: 13, borderWidth: 1, borderColor: '#E5E7EB' }}
+                        onPress={(e) => { e.stopPropagation?.(); setRejectReason(''); setRejectModal(order); }}
+                      >
+                        <Text style={{ color: '#6B7280', fontSize: 14 }}>요청 거절</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {order.sellerStatus === 'new' && !cancelRequested && (
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <TouchableOpacity
                         activeOpacity={0.8}
@@ -301,7 +371,7 @@ export default function OrdersScreen() {
                       </TouchableOpacity>
                     </View>
                   )}
-                  {order.sellerStatus === 'confirmed' && (
+                  {order.sellerStatus === 'confirmed' && !cancelRequested && (
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <TouchableOpacity
                         activeOpacity={0.8}
@@ -327,23 +397,15 @@ export default function OrdersScreen() {
                       </Text>
                     </View>
                   )}
+                  {/* 취소완료 — 이미 확정된 주문이라 별도 처리 버튼이 없다(과거의 '취소 처리' 는 no-op 이었다) */}
                   {order.sellerStatus === 'cancelled' && (
-                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        style={{ flex: 1, backgroundColor: '#E5484D', borderRadius: 10, alignItems: 'center', paddingVertical: 13 }}
-                        onPress={(e) => { e.stopPropagation?.(); setCancelModal(order); }}
-                      >
-                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>취소 처리</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        style={{ flex: 1, backgroundColor: '#fff', borderRadius: 10, alignItems: 'center', paddingVertical: 13, borderWidth: 1, borderColor: '#E5E7EB' }}
-                        onPress={() => navigation.navigate('OrderDetail', { orderId: order.id })}
-                      >
-                        <Text style={{ color: '#6B7280', fontSize: 14 }}>주문 상세</Text>
-                      </TouchableOpacity>
-                    </View>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      style={{ backgroundColor: '#fff', borderRadius: 10, alignItems: 'center', paddingVertical: 13, borderWidth: 1, borderColor: '#E5E7EB' }}
+                      onPress={() => navigation.navigate('OrderDetail', { orderId: order.id })}
+                    >
+                      <Text style={{ color: '#6B7280', fontSize: 14 }}>주문 상세</Text>
+                    </TouchableOpacity>
                   )}
                   {order.sellerStatus === 'completed' && (
                     <TouchableOpacity
@@ -435,18 +497,23 @@ export default function OrdersScreen() {
         </View>
       </Modal>
 
-      {/* Cancel Confirm Modal */}
-      <Modal visible={!!cancelModal} transparent animationType="fade">
+      {/* 취소요청 승인 확인 모달 — 승인 시 PG 전액취소가 먼저 실행된다(appStore/api) */}
+      <Modal visible={!!cancelModal} transparent animationType="fade" onRequestClose={() => setCancelModal(null)}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 20, padding: 24, width: '100%' }}>
             <View style={{ alignItems: 'center', marginBottom: 16 }}>
               <View style={{ backgroundColor: '#FFF0F0', borderRadius: 50, padding: 12, marginBottom: 12 }}>
                 <AlertTriangle color="#E5484D" size={28} />
               </View>
-              <Text style={{ fontSize: 18, fontWeight: '700', color: '#1F2933', marginBottom: 8 }}>취소 처리</Text>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: '#1F2933', marginBottom: 8 }}>취소 요청 승인</Text>
               <Text style={{ color: '#6B7280', fontSize: 14, textAlign: 'center', lineHeight: 22 }}>
-                {cancelModal?.productName} 주문의{'\n'}취소를 승인하시겠습니까?
+                {cancelModal?.productName} 주문의{'\n'}취소 요청을 승인하시겠습니까?
               </Text>
+              <View style={{ backgroundColor: '#FFF0F0', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 11, marginTop: 12, width: '100%' }}>
+                <Text style={{ fontSize: 13, color: '#E5484D', textAlign: 'center', lineHeight: 19 }}>
+                  결제금액 전액이 환불되며{'\n'}수수료는 부과되지 않습니다.
+                </Text>
+              </View>
             </View>
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <TouchableOpacity
@@ -460,10 +527,52 @@ export default function OrdersScreen() {
                 onPress={() => {
                   const target = cancelModal;
                   setCancelModal(null);
-                  runOrderAction(() => cancelOrder(target.id), '주문 취소 불가');
+                  runOrderAction(() => approveCancelRequest(target.id), '취소 승인 불가');
                 }}
               >
                 <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>취소 승인</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 취소요청 거절 모달 — PG 는 건드리지 않고 사유만 구매자에게 전달한다 */}
+      <Modal visible={!!rejectModal} transparent animationType="fade" onRequestClose={() => setRejectModal(null)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 20, padding: 24, width: '100%' }}>
+            <Text style={{ fontSize: 18, fontWeight: '700', color: '#1F2933', textAlign: 'center', marginBottom: 6 }}>취소 요청 거절</Text>
+            <Text style={{ color: '#6B7280', fontSize: 14, textAlign: 'center', lineHeight: 20, marginBottom: 14 }}>
+              거절 사유를 입력해주세요.{'\n'}구매자에게 그대로 전달되며 주문은 유지됩니다.
+            </Text>
+            <TextInput
+              value={rejectReason}
+              onChangeText={setRejectReason}
+              placeholder="예: 이미 상품 준비가 끝났습니다."
+              placeholderTextColor="#9AA3AF"
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+              style={{ backgroundColor: '#F5F6F7', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: '#1F2933', minHeight: 76, marginBottom: 18 }}
+            />
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={{ flex: 1, borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
+                onPress={() => setRejectModal(null)}
+              >
+                <Text style={{ color: '#374151', fontWeight: '600', fontSize: 15 }}>닫기</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1, backgroundColor: rejectReason.trim() ? '#1F2933' : '#C9CDD2', borderRadius: 12, paddingVertical: 13, alignItems: 'center' }}
+                disabled={!rejectReason.trim()}
+                onPress={() => {
+                  const target = rejectModal;
+                  const reason = rejectReason;
+                  setRejectModal(null);
+                  runOrderAction(() => rejectCancelRequest(target.id, reason), '요청 거절 불가');
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>요청 거절</Text>
               </TouchableOpacity>
             </View>
           </View>

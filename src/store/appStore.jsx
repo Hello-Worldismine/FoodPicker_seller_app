@@ -18,7 +18,16 @@ export const ORDER_SELLER_STATUS = {
   new:       { label: '신규주문', userStatus: 'pending',   color: '#FF8A3D', bg: '#FFF4ED' },
   confirmed: { label: '픽업대기', userStatus: 'pending',   color: '#22A06B', bg: '#E9F8F1' },
   completed: { label: '픽업완료', userStatus: 'completed', color: '#9AA3AF', bg: '#F5F6F7' },
-  cancelled: { label: '취소요청', userStatus: 'cancelled', color: '#E5484D', bg: '#FFF0F0' },
+  cancelled: { label: '취소완료', userStatus: 'cancelled', color: '#E5484D', bg: '#FFF0F0' },
+};
+
+// 취소요청 라벨맵 — orders.cancel_request_status(마이그레이션 20260731000000)와 1:1.
+// seller_status enum 은 확장하지 않았다(구버전 클라이언트 호환) — 요청은 new/confirmed 주문에
+// 붙는 '플래그' 이므로 상태 배지도 이 맵을 따로 써서 덮어 표시한다.
+export const CANCEL_REQUEST_STATUS = {
+  requested: { label: '취소요청', color: '#E5484D', bg: '#FFF0F0' },
+  approved:  { label: '취소 승인', color: '#9AA3AF', bg: '#F5F6F7' },
+  rejected:  { label: '요청 거절', color: '#FF8A3D', bg: '#FFF4ED' },
 };
 
 // 정산 상태 라벨맵 — DB settlement_status enum(영문 키)과 1:1.
@@ -131,11 +140,19 @@ export function formatPickupDeadline(source, minutes) {
   return `${dayLabelOf(deadline)} ${hhmm(deadline)}까지`;
 }
 
-// complete_pickup RPC 의 대문자 에러상수 → 판매자용 한국어 안내.
+// complete_pickup / respond_order_cancel / seller_cancel_order RPC 의 대문자 에러상수
+// → 판매자용 한국어 안내.
 export function pickupErrorMessage(err) {
   const msg = String(err?.message || '');
   if (msg.includes('ALREADY_COMPLETED')) return '이미 픽업 완료된 주문입니다.';
-  if (msg.includes('ORDER_CANCELLED')) return '취소된 주문입니다.';
+  if (msg.includes('ORDER_CANCELLED') || msg.includes('ALREADY_CANCELLED')) return '이미 취소된 주문입니다.';
+  // ── 판매자 자발 취소(seller_cancel_order) — 신규주문/픽업대기 단계에서만 취소할 수 있다 ──
+  if (msg.includes('NOT_CANCELLABLE')) return '이미 처리된 주문이라 취소할 수 없습니다.';
+  // ── 취소요청 흐름(respond_order_cancel) ──
+  if (msg.includes('NO_PENDING_REQUEST')) return '대기 중인 취소 요청이 없습니다. 이미 처리되었거나 구매자가 요청을 취소했을 수 있습니다.';
+  if (msg.includes('ALREADY_APPROVED')) return '이미 승인 처리된 취소 요청입니다.';
+  if (msg.includes('ALREADY_REQUESTED')) return '이미 취소 요청이 접수된 주문입니다.';
+  if (msg.includes('WINDOW_EXPIRED')) return '취소 요청 가능 시간(주문 후 10분)이 지났습니다.';
   if (msg.includes('NOT_PAID')) return '결제가 완료되지 않은 주문입니다.';
   if (msg.includes('ORDER_NOT_FOUND') || msg.includes('NOT_MY_ORDER')) return '우리 매장 주문이 아닙니다.';
   if (msg.includes('INVALID_CODE')) return '주문번호를 인식할 수 없습니다.';
@@ -309,9 +326,23 @@ export function AppProvider({ children }) {
     await api.updateOrderStatus(orderCode, 'confirmed');
     await reloadOrders();
   };
+  // 판매자 자발 취소 — api 가 'PG 전액취소 → seller_cancel_order RPC' 순서로 처리한다.
+  // (이전에는 상태만 바꿔서 구매자 카드 결제가 승인 상태로 남았다 = 돈이 돌아가지 않았다)
+  // 수수료 0원·전액 환불 기록과 재고·쿠폰 복구는 승인 경로와 똑같이 서버 RPC 몫이다.
   const cancelOrder = async (orderCode, reason) => {
-    const extra = reason && reason.trim() ? { cancel_reason: reason.trim() } : {};
-    await api.updateOrderStatus(orderCode, 'cancelled', extra);
+    await api.cancelOrderWithRefund(orderCode, reason);
+    await reloadOrders();
+  };
+
+  // ── 구매자 취소요청 응답 (respond_order_cancel) ──
+  // 승인은 api 가 'PG 전액취소 → RPC' 순서로 처리한다. 수수료 0원·환불액 기록은 서버 몫.
+  // 취소/픽업과 마찬가지로 실패를 삼키지 않는다 — 삼키면 버튼이 먹통으로 보인다.
+  const approveCancelRequest = async (orderCode, reason) => {
+    await api.respondOrderCancel(orderCode, true, reason);
+    await reloadOrders();
+  };
+  const rejectCancelRequest = async (orderCode, reason) => {
+    await api.respondOrderCancel(orderCode, false, reason);
     await reloadOrders();
   };
 
@@ -347,6 +378,7 @@ export function AppProvider({ children }) {
     updateProductStock, updateProductStatus,
     addProduct, updateProduct, deleteProduct,
     completePickup, lookupOrderForPickup, confirmOrder, cancelOrder,
+    approveCancelRequest, rejectCancelRequest,
     updateReviewReply,
     notifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   };

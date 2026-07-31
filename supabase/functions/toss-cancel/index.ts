@@ -1,15 +1,31 @@
 // ============================================================================
-// FoodPicker Edge Function: toss-cancel — 토스 결제 취소(관리자 환불 / 구매자 주문 취소)
+// FoodPicker Edge Function: toss-cancel — 토스 결제 취소
+//   (관리자 환불 / 판매자 취소승인 / 판매자 자발 주문취소)
 //
 // 요청(POST, Authorization: Bearer <JWT>):
 //   { paymentKey: string, cancelReason: string }
 // 응답: 200 { ok: true } / 에러 { error: string } (4xx/5xx)
 //
-// 권한(둘 중 하나):
+// 권한(둘 중 하나) — 2026-07-31 개편:
 //   ① 활성 관리자(admin_profiles.is_active) — 임의 결제 취소 가능(환불 처리).
-//   ② 구매자 본인 — paymentKey 가 본인(buyer_id=uid) 주문이고, 주문이 아직
-//      취소 가능 상태(seller_status in new/confirmed — cancel_my_order 와 동일 규칙)일 때만.
-//      (구매자 주문 취소 시 DB 취소(cancel_my_order)에 앞서 PG 결제를 실제 환불하는 용도.)
+//   ② 판매자 본인(본인 주문 & 취소 가능 상태) — paymentKey 가 본인 매장(seller_id=uid)
+//      주문이고, 주문이 아직 취소 가능 상태(seller_status in new/confirmed)이며,
+//      아직 취소 승인(approved)으로 환불이 끝나지 않았을 때.
+//      판매자의 취소 경로는 두 가지이고 **둘 다 통과시켜야 한다**:
+//        · [취소 승인]  cancel_request_status='requested' → respond_order_cancel(p_approve:true)
+//        · [주문 취소]  cancel_request_status is null 또는 'rejected'(자발 취소)
+//                       → seller_cancel_order()
+//      어느 쪽이든 **먼저** 이 함수로 PG 전액취소를 하고, 성공한 뒤에 RPC 로 DB 를
+//      반영한다(PG 먼저, DB 나중).
+//      ⚠️ 여기서 'requested' 를 강제하면 판매자 자발 취소가 전량 400 으로 막힌다(회귀).
+//      ⚠️ 'rejected' 도 막으면 안 된다 — 거절은 주문이 원래 상태로 되돌아간 것이지
+//         마감된 것이 아니다. 막으면 한 번 거절한 주문을 판매자가 영영 취소할 수 없다.
+//
+//   ⚠️ '구매자 본인' 분기는 제거했다. 구버전 사용자앱은 이 함수를 먼저 호출하고
+//      cancel_my_order 로 즉시 취소했는데, cancel_my_order 가 '취소 요청' shim 으로
+//      바뀐 뒤에도 그대로 두면 '돈은 환불됐는데 주문은 살아있는' 상태가 만들어진다
+//      (20260731000000_cancel_request_flow.sql §5). 그래서 구매자 호출은 403 으로 막고
+//      앱 업데이트를 안내한다.
 //
 // 멱등성: 이미 취소된 결제(ALREADY_CANCELED_PAYMENT)는 성공으로 간주한다 —
 //   'PG 취소 성공 → DB 환불 실패 → 재시도' 흐름이 여기서 막히면 PG/DB 가 영구
@@ -127,7 +143,7 @@ Deno.serve(async (req) => {
       return json({ error: "취소 사유를 입력해주세요." }, 400);
     }
 
-    // ── 3) 권한 검증: 관리자 또는 구매자 본인 ───────────────────────────────
+    // ── 3) 권한 검증: 관리자 또는 판매자 본인(취소 가능 상태) ───────────────
     const { data: admin, error: adminError } = await supabase
       .from("admin_profiles")
       .select("user_id")
@@ -138,17 +154,39 @@ Deno.serve(async (req) => {
       return json({ error: "권한 확인에 실패했습니다. 잠시 후 다시 시도해주세요." }, 500);
     }
     if (!admin) {
-      // 구매자 본인 취소 경로: 본인 주문 + 취소 가능 상태(cancel_my_order 와 동일 규칙)
+      // 판매자 경로: 본인 매장 주문 + 취소 가능 상태(취소승인/자발취소 공용).
       const { data: order, error: orderError } = await supabase
         .from("orders")
-        .select("id, buyer_id, seller_status, payment_status")
+        .select("id, buyer_id, seller_id, seller_status, payment_status, cancel_request_status")
         .eq("payment_key", paymentKey)
         .maybeSingle();
       if (orderError) {
         return json({ error: "주문 확인에 실패했습니다. 잠시 후 다시 시도해주세요." }, 500);
       }
-      if (!order || order.buyer_id !== uid) {
+      if (!order) {
         return json({ error: "취소 권한이 없습니다." }, 403);
+      }
+
+      // 구버전 사용자앱(구매자 uid)에 그대로 노출되는 안내 문구다.
+      // 구매자는 더 이상 직접 PG 취소를 할 수 없다 — [취소 요청] → 판매자 승인 경로만 유효.
+      if (order.buyer_id === uid && order.seller_id !== uid) {
+        return json({
+          error: "앱 업데이트가 필요합니다. 주문 취소는 [취소 요청] 후 판매자 승인으로 진행됩니다.",
+        }, 403);
+      }
+
+      if (order.seller_id !== uid) {
+        return json({ error: "취소 권한이 없습니다." }, 403);
+      }
+      // 이미 승인되어 환불까지 끝난 건만 막는다(이중 환불 방지).
+      // null(자발 취소) 과 'requested'(취소 승인) 는 둘 다 정상 경로다.
+      //
+      // ⚠️ 'rejected' 를 막으면 안 된다. 거절은 요청이 '마감된' 것이 아니라 주문이 원래 상태로
+      //    되돌아간 것이다. 막아버리면 판매자가 취소요청을 한 번 거절한 주문을 이후 재고 소진 등의
+      //    이유로 스스로 취소할 방법이 사라진다(seller_cancel_order 는 통과하는데 여기서만 막혀
+      //    '이미 처리된 취소 요청입니다' 라는 무관한 문구가 뜬다). seller_status 검사로 충분하다.
+      if (order.cancel_request_status === "approved") {
+        return json({ error: "이미 취소 승인이 완료된 주문입니다." }, 400);
       }
       if (!["new", "confirmed"].includes(order.seller_status as string)) {
         return json({ error: "취소할 수 없는 주문 상태입니다." }, 400);

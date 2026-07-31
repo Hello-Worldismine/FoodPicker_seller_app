@@ -41,13 +41,18 @@ export default function HomeScreen() {
   const [bannerIdx, setBannerIdx] = useState(0);
 
   const sellingCount = products.filter(p => p.status === 'selling').length;
-  const newOrderCount = orders.filter(o => o.sellerStatus === 'new').length;
-  const pickupWaitCount = orders.filter(o => o.sellerStatus === 'confirmed').length;
+  // 취소요청 대기 건(cancel_request_status='requested')은 seller_status 가 아직 new/confirmed 라
+  // 그냥 세면 '예약 건수' 에 잡힌다. 주문관리 탭(Orders TAB_FILTER)은 이 건을 신규주문·픽업대기에서
+  // 빼고 '취소요청' 탭으로 분리하므로, 홈 카운트도 같은 기준을 써서 숫자가 어긋나지 않게 한다.
+  const isCancelRequested = o => o.cancelRequestStatus === 'requested';
+  const newOrderCount = orders.filter(o => o.sellerStatus === 'new' && !isCancelRequested(o)).length;
+  const pickupWaitCount = orders.filter(o => o.sellerStatus === 'confirmed' && !isCancelRequested(o)).length;
   const completedCount = orders.filter(o => o.sellerStatus === 'completed').length;
+  const cancelRequestCount = orders.filter(isCancelRequested).length;
   const unreadCount = notifications.filter(n => !n.read).length;
 
   const recentOrders = orders
-    .filter(o => o.sellerStatus === 'new' || o.sellerStatus === 'confirmed')
+    .filter(o => (o.sellerStatus === 'new' || o.sellerStatus === 'confirmed') && !isCancelRequested(o))
     .slice(0, 5);
 
   // 롤링 배너 - 화면 포커스 기준으로 관리
@@ -220,6 +225,35 @@ export default function HomeScreen() {
           </View>
 
         </View>
+
+        {/* 취소요청 알림 카드 — 위 카운트에서 빠진 건이라 여기서 눈에 띄게 다시 노출한다.
+            방치하면 구매자 환불이 계속 지연되므로 놓쳐서는 안 되는 항목이다. */}
+        {cancelRequestCount > 0 && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('Orders', { initialTab: 'cancelRequested' })}
+            style={{
+              marginHorizontal: 16, marginBottom: 12,
+              backgroundColor: '#FFF0F0', borderRadius: 16,
+              borderWidth: 1, borderColor: '#F6CACB',
+              paddingHorizontal: 16, paddingVertical: 14,
+              flexDirection: 'row', alignItems: 'center', gap: 12,
+            }}
+          >
+            <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' }}>
+              <AlertTriangle color="#E5484D" size={20} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: '#E5484D', marginBottom: 2 }}>
+                취소요청 {cancelRequestCount}건
+              </Text>
+              <Text style={{ fontSize: 12, color: '#B4585B', lineHeight: 17 }}>
+                구매자가 주문 취소를 요청했습니다. 승인 또는 거절을 처리해주세요.
+              </Text>
+            </View>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#E5484D' }}>처리하기</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Quick Action Buttons */}
         <View style={{ flexDirection: 'row', paddingHorizontal: 16, gap: 12, marginBottom: 16 }}>

@@ -112,6 +112,16 @@ export function mapOrder(r) {
     amount: r.amount,
     fee: r.fee,
     cancelReason: r.cancel_reason,
+    // 취소요청 흐름(마이그레이션 20260731000000) — seller_status enum 을 건드리지 않는
+    // '플래그' 컬럼이다. 요청 대기(requested)여도 seller_status 는 new/confirmed 그대로다.
+    cancelRequestStatus: r.cancel_request_status ?? null,
+    cancelRequestedAt: r.cancel_requested_at ?? null,
+    cancelRequestReason: r.cancel_request_reason ?? null,
+    cancelRespondedAt: r.cancel_responded_at ?? null,
+    cancelResponseReason: r.cancel_response_reason ?? null,
+    // 실제 환불 금액(승인 시 결제금액 전액 — 수수료 차감 없음).
+    refundAmount: r.refund_amount ?? 0,
+    paymentKey: r.payment_key ?? null,
   };
 }
 
@@ -410,6 +420,78 @@ export async function updateOrderStatus(orderCode, sellerStatus, extra = {}) {
     throw new Error(`주문(${orderCode})을 변경할 수 없습니다. 우리 매장 주문이 아니거나 이미 처리된 주문일 수 있습니다.`);
   }
   return mapOrder({ ...data[0] });
+}
+
+// ───────── 취소·환불 (마이그레이션 20260731000000) ─────────
+// [순서 규약] **PG 취소 먼저, DB 나중**. 관리자웹 refundOrder / 사용자앱 cancelOrder 와 동일하다.
+//   반대로 하면 'DB 는 취소인데 돈은 안 돌아간' 더 나쁜 상태가 된다.
+//   toss-cancel 은 이미 취소된 결제를 성공으로 간주(멱등)하므로
+//   'PG 성공 → DB 실패' 후 승인 버튼을 다시 눌러도 여기서 막히지 않는다.
+//
+// 결제(payment_key)가 없는 주문은 PG 취소 대상이 아니므로 건너뛴다(false 반환).
+async function cancelTossPayment(orderCode, cancelReason) {
+  const { data: row, error: findError } = await supabase
+    .from('orders').select('payment_key').eq('order_code', orderCode).maybeSingle();
+  if (findError) throw findError;
+  if (!row || !row.payment_key) return false;
+
+  const { data, error } = await supabase.functions.invoke('toss-cancel', {
+    body: { paymentKey: row.payment_key, cancelReason },
+  });
+  if (error) {
+    // 4xx(FunctionsHttpError)이면 함수가 내려준 { error } 메시지를 꺼내 한국어로 던진다.
+    let msg = error.message;
+    try {
+      if (error.context && typeof error.context.json === 'function') {
+        const body = await error.context.json();
+        if (body && body.error) msg = body.error;
+      }
+    } catch (e) {}
+    throw new Error(msg || '결제 취소(환불)에 실패했습니다.');
+  }
+  if (data && data.error) throw new Error(data.error);
+  return true;
+}
+
+// 구매자 취소요청에 대한 판매자 응답.
+//   · 승인(approve=true)  : PG 전액취소 성공 → respond_order_cancel(수수료 0원·전액 환불 기록)
+//   · 거절(approve=false) : PG 를 건드리지 않고 RPC 만(주문은 원래 상태 그대로 유지된다)
+// 실패 시 error.message 가 대문자 상수(NO_PENDING_REQUEST/ALREADY_APPROVED/NOT_MY_ORDER 등) —
+// 호출부에서 pickupErrorMessage 로 한국어 안내로 바꾼다.
+export async function respondOrderCancel(orderCode, approve, reason = null) {
+  const p_reason = reason && reason.trim() ? reason.trim() : null;
+  if (approve) {
+    await cancelTossPayment(orderCode, '구매자 취소요청 승인(수수료 면제 전액 환불)');
+  }
+  const { data, error } = await supabase.rpc('respond_order_cancel', {
+    p_order_code: orderCode,
+    p_approve: !!approve,
+    p_reason,
+  });
+  if (error) throw error;
+  return mapOrder(data);
+}
+
+// 판매자 자발 취소(신규주문·픽업대기 단계의 '주문 취소').
+// [순서 규약] 위와 동일하게 **PG 전액취소 먼저, DB(RPC) 나중**.
+// [주의] 여기서 orders 를 직접 UPDATE 하면 안 된다 — authenticated 의 컬럼 화이트리스트가
+//   (seller_status, cancel_reason) 뿐이라 payment_status='refunded' / fee=0 / refund_amount /
+//   refunded_at 을 쓸 수 없다. 즉 '돈은 나갔는데 장부는 결제완료·수수료 부과' 로 갈라진다.
+//   → 승인 경로(respond_order_cancel)와 같은 기록을 남기는 security definer RPC
+//     seller_cancel_order 를 쓴다(수수료 0원·전액 환불 기록 + 재고·쿠폰 복구 + 양쪽 알림).
+//   RPC 는 멱등이다(이미 cancelled 면 현재 행 반환) — 'PG 성공 → RPC 실패' 후 재시도해도 안전하다.
+// 결제(payment_key)가 없는 주문은 cancelTossPayment 가 PG 호출을 건너뛰고 false 를 반환한다.
+// 실패 시 error.message 가 대문자 상수(NOT_CANCELLABLE/ALREADY_COMPLETED/NOT_MY_ORDER 등) —
+// 호출부에서 pickupErrorMessage 로 한국어 안내로 바꾼다.
+export async function cancelOrderWithRefund(orderCode, reason) {
+  const trimmed = reason && reason.trim() ? reason.trim() : '';
+  await cancelTossPayment(orderCode, trimmed || '판매자 주문 취소');
+  const { data, error } = await supabase.rpc('seller_cancel_order', {
+    p_order_code: orderCode,
+    p_reason: trimmed || null,
+  });
+  if (error) throw error;
+  return mapOrder(data);
 }
 
 // ───────── QR 픽업 (20260728000000 마이그레이션 §6) ─────────
