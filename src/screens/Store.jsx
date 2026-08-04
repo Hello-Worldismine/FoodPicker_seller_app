@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -19,19 +19,19 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../store/appStore';
 import { useAuth } from '../store/authStore';
-import { uploadImageIfLocal } from '../lib/storage';
-import { formatPhone } from '../lib/format';
+import { uploadImageIfLocal, isUnsupportedImageUrl } from '../lib/storage';
+import { formatDeadlineClock } from '../lib/format';
 import DaumPostcodeModal from '../components/DaumPostcodeModal';
+import NaverGeocoder from '../components/NaverGeocoder';
 import {
   ChevronRight,
   ChevronLeft,
-  ChevronDown,
-  ChevronUp,
   Camera,
   Edit2,
   Star,
   Phone,
   MapPin,
+  Tag,
   Building2,
   Clock,
   CreditCard,
@@ -46,6 +46,7 @@ import {
   Navigation,
   MessageSquare,
   Heart,
+  Ticket,
 } from 'lucide-react-native';
 
 const APPROVAL_CONFIG = {
@@ -57,11 +58,67 @@ const APPROVAL_CONFIG = {
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DAY_LABELS = { mon: '월', tue: '화', wed: '수', thu: '목', fri: '금', sat: '토', sun: '일' };
 
+// iOS 기본값(Automatic)은 HEIC 원본 표현을 넘겨준다 → 업로드된 사진이 안드로이드·웹에서 렌더 불가.
+// Compatible 을 지정해 JPEG 표현을 요청한다(expo-image-picker 17 지원 옵션).
+const IMAGE_PICKER_BASE = {
+  mediaTypes: ImagePicker.MediaTypeOptions.Images,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+};
+
+// 저장된 이미지가 HEIC 등 미지원 형식이면 RN <Image> 는 조용히 빈칸을 그린다.
+// 확장자로 선판정 + onError 를 잡아 재업로드 안내로 대체한다.
+function FallbackImage({ uri, style, resizeMode = 'cover', compact = false }) {
+  const [failed, setFailed] = useState(() => !!uri && isUnsupportedImageUrl(uri));
+
+  useEffect(() => { setFailed(!!uri && isUnsupportedImageUrl(uri)); }, [uri]);
+
+  if (!uri) return null;
+  if (failed) {
+    return (
+      <View
+        style={[
+          { alignItems: 'center', justifyContent: 'center', backgroundColor: '#F5F6F7', padding: 6 },
+          style,
+        ]}
+      >
+        <Text
+          style={{ color: '#9AA3AF', fontSize: compact ? 9 : 12, textAlign: 'center', lineHeight: compact ? 12 : 17 }}
+          numberOfLines={compact ? 3 : undefined}
+        >
+          {compact ? '표시 불가\n형식 미지원' : '이미지를 표시할 수 없습니다(형식 미지원).\n다시 업로드해주세요'}
+        </Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri }}
+      style={style}
+      resizeMode={resizeMode}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function formatBizNum(raw) {
   const d = raw.replace(/\D/g, '').slice(0, 10);
   if (d.length <= 3) return d;
   if (d.length <= 5) return `${d.slice(0, 3)}-${d.slice(3)}`;
   return `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}`;
+}
+
+function formatPhone(raw) {
+  const d = raw.replace(/\D/g, '').slice(0, 11);
+  if (d.startsWith('02')) {
+    if (d.length <= 2) return d;
+    if (d.length <= 5) return `${d.slice(0, 2)}-${d.slice(2)}`;
+    if (d.length <= 9) return `${d.slice(0, 2)}-${d.slice(2, 5)}-${d.slice(5)}`;
+    return `${d.slice(0, 2)}-${d.slice(2, 6)}-${d.slice(6)}`;
+  }
+  if (d.length <= 3) return d;
+  if (d.length <= 7) return `${d.slice(0, 3)}-${d.slice(3)}`;
+  return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
 }
 
 function maskResident(rn) {
@@ -93,10 +150,15 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
   const [name, setName] = useState(storeInfo.name);
   const [bizNumber, setBizNumber] = useState(storeInfo.bizNumber);
   const [bizCertFile, setBizCertFile] = useState(null);
-  const [showBizUpload, setShowBizUpload] = useState(false);
   const [residentFront, setResidentFront] = useState(storeInfo.residentNumber?.split('-')[0] || '');
   const [residentBack, setResidentBack] = useState(storeInfo.residentNumber?.split('-')[1] || '');
   const [address, setAddress] = useState(storeInfo.address);
+  // 주소만 저장하고 좌표를 저장하지 않아 사용자앱 지도에 매장이 뜨지 않던 문제 대응.
+  const [coords, setCoords] = useState(
+    storeInfo.lat != null && storeInfo.lng != null ? { lat: storeInfo.lat, lng: storeInfo.lng } : null
+  );
+  const [geocoding, setGeocoding] = useState(false);
+  const geocoderRef = useRef(null);
   const [showPostcode, setShowPostcode] = useState(false);
   const [bankName, setBankName] = useState(storeInfo.bankName);
   const [accountNumber, setAccountNumber] = useState(storeInfo.accountNumber);
@@ -107,13 +169,17 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
   const originalBiz = storeInfo.bizNumber;
   const bizChanged = bizNumber !== originalBiz;
 
-  const canSubmit = changeReason.trim().length > 0 && (!bizChanged || bizCertFile);
+  // 주소는 사용자앱 지도·픽업 안내의 기준값이라 필수. 사업자번호를 바꿨다면 등록증 재업로드도 필수.
+  const canSubmit =
+    changeReason.trim().length > 0 &&
+    !!address &&
+    (!bizChanged || !!bizCertFile);
 
   async function pickBizCert() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      ...IMAGE_PICKER_BASE,
       quality: 0.8,
     });
     if (!result.canceled && result.assets?.[0]) {
@@ -121,10 +187,21 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     }
   }
 
+  // 주소 선택 즉시 좌표를 구한다(네이버 지도 JS SDK geocoder).
+  async function resolveAddress(addr) {
+    setAddress(addr);
+    setCoords(null);
+    if (!addr) return;
+    setGeocoding(true);
+    try {
+      setCoords((await geocoderRef.current?.geocode(addr)) || null);
+    } finally {
+      setGeocoding(false);
+    }
+  }
+
   function handleBizNumberChange(text) {
-    const formatted = formatBizNum(text);
-    setBizNumber(formatted);
-    setShowBizUpload(formatted !== originalBiz);
+    setBizNumber(formatBizNum(text));
   }
 
   // 변경 신청: 허용 컬럼은 setStoreInfo가 storeToDb→updateStoreRow로 DB 영속.
@@ -134,16 +211,23 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
     try {
+      // 새로 선택한 등록증이 있으면 사업자번호 변경 여부와 무관하게 항상 업로드한다
+      // (번호는 그대로인데 등록증만 갱신하는 경우가 흔하다).
       let bizCertImage = storeInfo.bizCertImage;
-      if (bizChanged && bizCertFile) {
+      if (bizCertFile) {
         bizCertImage = await uploadImageIfLocal(bizCertFile, null, 'documents');
       }
+      // 좌표 최종 확보(주소는 바뀌었는데 좌표를 못 구한 경우 한 번 더 시도)
+      let geo = coords;
+      if (!geo && address) geo = await geocoderRef.current?.geocode(address);
+
       setStoreInfo(prev => ({
         ...prev,
         name,
         bizNumber,
         residentNumber: `${residentFront}-${residentBack}`,
         address,
+        ...(geo ? { lat: geo.lat, lng: geo.lng } : {}),
         bankName,
         accountNumber,
         accountHolder,
@@ -165,10 +249,12 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
     setName(storeInfo.name);
     setBizNumber(storeInfo.bizNumber);
     setBizCertFile(null);
-    setShowBizUpload(false);
     setResidentFront(storeInfo.residentNumber?.split('-')[0] || '');
     setResidentBack(storeInfo.residentNumber?.split('-')[1] || '');
     setAddress(storeInfo.address);
+    setCoords(
+      storeInfo.lat != null && storeInfo.lng != null ? { lat: storeInfo.lat, lng: storeInfo.lng } : null
+    );
     setBankName(storeInfo.bankName);
     setAccountNumber(storeInfo.accountNumber);
     setAccountHolder(storeInfo.accountHolder);
@@ -225,31 +311,42 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
                 placeholderTextColor="#9AA3AF"
                 keyboardType="numeric"
               />
-              {showBizUpload && (
-                <View className="mt-2">
+              {/* 등록증 업로드/미리보기는 항상 노출한다 — 번호는 그대로 두고 등록증만
+                  다시 올리고 싶은 경우가 많아 예전처럼 번호 변경 시에만 열면 진입이 불가능하다. */}
+              <View className="mt-2">
+                {bizChanged ? (
                   <Text className="text-xs text-orange mb-1.5">
                     사업자등록번호 변경 시 사업자등록증 재업로드가 필요합니다
                   </Text>
-                  <TouchableOpacity
-                    onPress={pickBizCert}
-                    className="border-2 border-dashed border-orange/40 rounded-xl p-4 items-center"
-                    style={{ backgroundColor: '#FFF8F4' }}
-                  >
-                    {bizCertFile ? (
-                      <>
-                        <Image source={{ uri: bizCertFile }} style={{ alignSelf: 'stretch', height: 160, borderRadius: 8 }} resizeMode="contain" />
-                        <Text className="text-primary text-xs mt-2">탭하여 다시 선택</Text>
-                      </>
-                    ) : (
-                      <View className="items-center">
-                        <Camera color="#FF8A3D" size={24} />
-                        <Text className="text-orange text-sm mt-1.5 font-semibold">사업자등록증 업로드</Text>
-                        <Text className="text-gray-400 text-xs mt-0.5">이미지 파일 선택</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              )}
+                ) : (
+                  <Text className="text-xs text-gray-400 mb-1.5">사업자등록증 (필요 시 재업로드)</Text>
+                )}
+                <TouchableOpacity
+                  onPress={pickBizCert}
+                  className="border-2 border-dashed border-orange/40 rounded-xl p-4 items-center"
+                  style={{ backgroundColor: '#FFF8F4' }}
+                >
+                  {bizCertFile || storeInfo.bizCertImage ? (
+                    <View style={{ alignItems: 'center', width: '100%' }}>
+                      {/* 등록증은 문서 → 상하가 잘리지 않도록 contain */}
+                      <FallbackImage
+                        uri={bizCertFile || storeInfo.bizCertImage}
+                        style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#fff' }}
+                        resizeMode="contain"
+                      />
+                      <Text className="text-primary text-xs mt-2">
+                        {bizCertFile ? '새로 선택한 파일 · 탭하여 다시 선택' : '등록된 등록증 · 탭하여 재업로드'}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View className="items-center">
+                      <Camera color="#FF8A3D" size={24} />
+                      <Text className="text-orange text-sm mt-1.5 font-semibold">사업자등록증 업로드</Text>
+                      <Text className="text-gray-400 text-xs mt-0.5">JPG · PNG 이미지 파일 선택</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* Resident Number */}
@@ -281,7 +378,7 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
 
             {/* Address */}
             <View className="mx-4 mb-3">
-              <Text className="text-sm font-bold text-charcoal mb-2">매장 주소</Text>
+              <Text className="text-sm font-bold text-charcoal mb-2">매장 주소 *</Text>
               <TouchableOpacity
                 className="bg-white rounded-xl px-4 py-3 flex-row items-center gap-2 border border-gray-100"
                 onPress={() => setShowPostcode(true)}
@@ -292,6 +389,16 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
                 </Text>
                 <Text className="text-primary text-sm font-semibold">검색</Text>
               </TouchableOpacity>
+              {/* 좌표 확보 상태 — 좌표가 없으면 사용자앱 지도에 매장이 표시되지 않는다 */}
+              {geocoding ? (
+                <Text className="text-xs text-gray-500 mt-2">지도 위치를 확인하고 있어요…</Text>
+              ) : address && coords ? (
+                <Text className="text-xs text-primary mt-2">✓ 지도 위치 확인 완료</Text>
+              ) : address ? (
+                <Text className="text-xs mt-2" style={{ color: '#B45309' }}>
+                  지도 위치를 찾지 못했습니다 · 사용자 앱 지도에 표시되지 않을 수 있어요
+                </Text>
+              ) : null}
             </View>
 
             {/* Bank Info */}
@@ -372,8 +479,12 @@ function AdminEditScreen({ visible, onClose, storeInfo, setStoreInfo }) {
         <DaumPostcodeModal
           visible={showPostcode}
           onClose={() => setShowPostcode(false)}
-          onSelect={addr => setAddress(addr)}
+          onSelect={addr => { setShowPostcode(false); resolveAddress(addr); }}
         />
+
+        {/* 주소 → 좌표 변환용 숨김 WebView. 렌더하지 않으면 geocoderRef.current 가 없어
+            좌표가 항상 null 이 되고 사용자앱 지도에 매장이 표시되지 않는다. */}
+        <NaverGeocoder ref={geocoderRef} />
       </View>
     </Modal>
   );
@@ -768,14 +879,45 @@ export default function StoreScreen() {
   const [showPreview, setShowPreview] = useState(false);
   const [showCustomerCenter, setShowCustomerCenter] = useState(false);
   const [bizUploading, setBizUploading] = useState(false);
+  const [bizCertPending, setBizCertPending] = useState(null); // 선택했지만 아직 업로드 전인 로컬 URI
+  const [showBizCertViewer, setShowBizCertViewer] = useState(false);
+
+  const geocoderRef = useRef(null);
+  const geoBackfilled = useRef(false);
 
   const approvalCfg = APPROVAL_CONFIG[storeInfo.approvalStatus] || APPROVAL_CONFIG.pending;
+
+  // 기존 매장은 주소만 저장되고 lat/lng 가 비어 있어 사용자앱 지도·픽업 위치에 표시되지 않는다.
+  // 진입 시 1회 좌표만 보정한다.
+  // ※ address 를 함께 쓰면 flag_store_reapproval 트리거가 approval_status 를 pending 으로
+  //    되돌려 사용자앱에서 매장이 사라진다 → 좌표만 갱신(트리거 감시 대상 아님).
+  useEffect(() => {
+    if (geoBackfilled.current) return;
+    if (!storeInfo?.address) return;
+    if (storeInfo.lat != null && storeInfo.lng != null) return;
+    geoBackfilled.current = true;
+
+    let cancelled = false;
+    // 숨김 WebView 안 네이버 SDK 로드를 잠깐 기다린다(요청은 SDK 준비 전에도 큐에 쌓인다).
+    const timer = setTimeout(async () => {
+      try {
+        const coords = await geocoderRef.current?.geocode(storeInfo.address);
+        if (!cancelled && coords) {
+          setStoreInfo(prev => ({ ...prev, lat: coords.lat, lng: coords.lng }));
+        }
+      } catch (e) {
+        console.warn('[store geo backfill]', e?.message || e);
+      }
+    }, 1200);
+
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [storeInfo?.address, storeInfo?.lat, storeInfo?.lng]);
 
   async function pickStoreImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      ...IMAGE_PICKER_BASE,
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
@@ -785,20 +927,28 @@ export default function StoreScreen() {
     }
   }
 
-  async function uploadBizCert() {
+  // 1단계: 선택만 하고 로컬 미리보기를 띄운다(바로 업로드하지 않는다).
+  async function pickBizCertForUpload() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      ...IMAGE_PICKER_BASE,
       quality: 0.8,
     });
     if (result.canceled || !result.assets?.[0]) return;
+    setBizCertPending(result.assets[0].uri);
+  }
+
+  // 2단계: 미리보기에서 확정했을 때만 업로드한다.
+  async function confirmBizCertUpload() {
+    if (!bizCertPending || bizUploading) return;
     setBizUploading(true);
     try {
       // Storage 업로드 후 public URL을 stores.biz_cert_image에 영속(setStoreInfo→updateStoreRow).
-      const url = await uploadImageIfLocal(result.assets[0].uri, null, 'documents');
+      const url = await uploadImageIfLocal(bizCertPending, null, 'documents');
       setStoreInfo(prev => ({ ...prev, bizCertImage: url }));
-      Alert.alert('업로드 완료', '사업자등록증이 재업로드되었습니다.');
+      setBizCertPending(null);
+      Alert.alert('업로드 완료', '사업자등록증이 등록되었습니다.');
     } catch (e) {
       Alert.alert('업로드 실패', e.message || '이미지 업로드에 실패했습니다.');
     } finally {
@@ -822,7 +972,12 @@ export default function StoreScreen() {
               <TouchableOpacity onPress={pickStoreImage}>
                 <View className="w-20 h-20 rounded-2xl bg-softgray overflow-hidden items-center justify-center border-2 border-gray-100">
                   {storeInfo.storeImage ? (
-                    <Image source={{ uri: storeInfo.storeImage }} className="w-full h-full" resizeMode="cover" />
+                    <FallbackImage
+                      uri={storeInfo.storeImage}
+                      style={{ width: '100%', height: '100%' }}
+                      resizeMode="cover"
+                      compact
+                    />
                   ) : (
                     <View className="items-center">
                       <Building2 color="#9AA3AF" size={24} />
@@ -992,30 +1147,74 @@ export default function StoreScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Coupon Management */}
+        <View className="mx-4 mb-3 bg-white rounded-xl overflow-hidden shadow-sm" style={{ elevation: 1 }}>
+          <View className="px-4 py-3 border-b border-gray-100">
+            <Text className="font-bold text-charcoal text-[16px]">쿠폰 관리</Text>
+          </View>
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5 border-b border-gray-50"
+            onPress={() => navigation.navigate('CouponRequest')}
+          >
+            <View className="flex-row items-center gap-3">
+              <Ticket color="#22A06B" size={18} />
+              <Text className="font-semibold text-charcoal text-[16px]">쿠폰 만들기</Text>
+            </View>
+            <ChevronRight color="#9AA3AF" size={18} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5"
+            onPress={() => navigation.navigate('CouponStatus')}
+          >
+            <View className="flex-row items-center gap-3">
+              <FileText color="#9AA3AF" size={18} />
+              <Text className="font-semibold text-charcoal text-[16px]">신청 현황</Text>
+            </View>
+            <ChevronRight color="#9AA3AF" size={18} />
+          </TouchableOpacity>
+        </View>
+
         {/* Documents */}
         <View className="mx-4 mb-3 bg-white rounded-xl overflow-hidden shadow-sm" style={{ elevation: 1 }}>
           <View className="px-4 py-3 border-b border-gray-100">
             <Text className="font-bold text-charcoal text-[16px]">서류</Text>
           </View>
           <View className="px-4 py-3 flex-row items-center justify-between">
-            <View className="flex-row items-center gap-3">
+            <View className="flex-row items-center gap-3 flex-1">
               <FileText color="#22A06B" size={18} />
-              <View>
+              <View className="flex-1">
                 <Text className="text-charcoal text-[15px] font-semibold">사업자등록증</Text>
                 <Text
                   className="text-[13px] mt-0.5"
                   style={{ color: storeInfo.bizCertImage ? '#22A06B' : '#9AA3AF' }}
                 >
-                  {storeInfo.bizCertImage ? '등록 완료' : '미등록'}
+                  {storeInfo.bizCertImage ? '등록 완료 · 썸네일을 탭하면 크게 보입니다' : '미등록'}
                 </Text>
               </View>
             </View>
+            {/* 저장된 등록증 썸네일 — 탭하면 전체화면으로 확대 */}
+            {!!storeInfo.bizCertImage && (
+              <TouchableOpacity
+                onPress={() => setShowBizCertViewer(true)}
+                className="mr-2 rounded-lg overflow-hidden border border-gray-200"
+                style={{ width: 48, height: 48, backgroundColor: '#fff' }}
+              >
+                <FallbackImage
+                  uri={storeInfo.bizCertImage}
+                  style={{ width: 48, height: 48 }}
+                  resizeMode="contain"
+                  compact
+                />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
-              onPress={uploadBizCert}
+              onPress={pickBizCertForUpload}
               disabled={bizUploading}
               className="bg-softgray border border-gray-200 rounded-lg px-3 py-1.5"
             >
-              <Text className="text-gray-600 text-xs font-semibold">{bizUploading ? '업로드 중…' : '재업로드'}</Text>
+              <Text className="text-gray-600 text-xs font-semibold">
+                {bizUploading ? '업로드 중…' : storeInfo.bizCertImage ? '재업로드' : '업로드'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1163,6 +1362,74 @@ export default function StoreScreen() {
         </View>
       </Modal>
 
+      {/* 사업자등록증 전체화면 보기 */}
+      <Modal
+        visible={showBizCertViewer && !!storeInfo.bizCertImage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowBizCertViewer(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)' }}>
+          <View style={{ paddingTop: insets.top + 12, paddingHorizontal: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>사업자등록증</Text>
+            <TouchableOpacity onPress={() => setShowBizCertViewer(false)} className="p-1">
+              <X color="#fff" size={24} />
+            </TouchableOpacity>
+          </View>
+          <View style={{ flex: 1, padding: 12 }}>
+            <FallbackImage
+              uri={storeInfo.bizCertImage}
+              style={{ flex: 1, width: '100%' }}
+              resizeMode="contain"
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* 재업로드 확정 — '선택 → 미리보기 확인 → 업로드' 2단계 */}
+      <Modal
+        visible={!!bizCertPending}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!bizUploading) setBizCertPending(null); }}
+      >
+        <View className="flex-1 bg-black/60 items-center justify-center px-6">
+          <View className="bg-white rounded-2xl p-5 w-full">
+            <Text className="text-[16px] font-bold text-charcoal mb-1 text-center">사업자등록증 확인</Text>
+            <Text className="text-gray-500 text-xs text-center mb-3">
+              내용이 잘 보이는지 확인한 뒤 업로드해주세요
+            </Text>
+            <FallbackImage
+              uri={bizCertPending}
+              style={{ width: '100%', height: 260, borderRadius: 10, backgroundColor: '#F5F6F7' }}
+              resizeMode="contain"
+            />
+            <View className="flex-row gap-3 mt-4">
+              <TouchableOpacity
+                className="flex-1 border border-gray-200 rounded-xl py-3 items-center"
+                onPress={() => setBizCertPending(null)}
+                disabled={bizUploading}
+              >
+                <Text className="text-gray-600 font-semibold">다시 선택</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                className="flex-1 rounded-xl py-3 items-center"
+                style={{ backgroundColor: bizUploading ? '#E5E7EB' : '#22A06B' }}
+                onPress={confirmBizCertUpload}
+                disabled={bizUploading}
+              >
+                <Text className="font-semibold" style={{ color: bizUploading ? '#9AA3AF' : '#fff' }}>
+                  {bizUploading ? '업로드 중…' : '업로드'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 좌표 백필용 숨김 WebView */}
+      <NaverGeocoder ref={geocoderRef} />
+
       <StorePreviewModal
         visible={showPreview}
         onClose={() => setShowPreview(false)}
@@ -1289,19 +1556,12 @@ export default function StoreScreen() {
   );
 }
 
-// ─── Store Preview Modal (소비자 앱 StoreScreen과 동일한 스타일) ─────
-function fmtPreviewTime(iso) {
-  const d = new Date(iso);
-  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-}
-
+// ─── Store Preview Modal ────────────────────────────────────────
 function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }) {
   const insets = useSafeAreaInsets();
   const [previewTab, setPreviewTab] = useState('products');
-  const [previewProduct, setPreviewProduct] = useState(null);
 
   const sellingProducts = (products || []).filter(p => p.status === 'selling');
-  const soldoutProducts = (products || []).filter(p => p.status === 'soldout');
 
   // 미리보기(소비자 화면 시뮬레이션)의 액션도 실제 매장 정보로 동작.
   function openDirections() {
@@ -1317,9 +1577,15 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
     navigation?.navigate('Reviews');
   }
 
-  const pickupTime = sellingProducts.length > 0 && sellingProducts[0].pickupStart
-    ? `${fmtPreviewTime(sellingProducts[0].pickupStart)} ~ ${fmtPreviewTime(sellingProducts[0].pickupEnd)}`
-    : null;
+  // 픽업 기준은 상품별 '픽업 마감 시각'(products.pickup_deadline_at)이다.
+  // 구 '주문 후 N분'(pickup_deadline_minutes)·매장 기본값(default_pickup_deadline_minutes)은 폐기.
+  // 판매중 상품 중 가장 이른 마감을 대표로 보여준다(고객이 가장 먼저 놓치는 시각).
+  const nearestDeadlineMs = sellingProducts.reduce((min, p) => {
+    const t = p.pickupDeadlineAt ? new Date(p.pickupDeadlineAt).getTime() : NaN;
+    if (!Number.isFinite(t)) return min;
+    return min == null || t < min ? t : min;
+  }, null);
+  const pickupTime = nearestDeadlineMs != null ? formatDeadlineClock(nearestDeadlineMs) : null;
 
   function buildSummaryHours() {
     const days = storeInfo.openHours?.days;
@@ -1331,174 +1597,150 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: '#F5F6F7' }}>
-        {/* 녹색 헤더 */}
+      <View style={{ flex: 1, backgroundColor: '#fff' }}>
+        {/* Green header */}
         <View style={{ backgroundColor: '#22A06B', paddingTop: insets.top }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }}>
-            <TouchableOpacity onPress={onClose} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
-              <ChevronLeft size={20} color="#fff" />
+          {/* Nav row */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8 }}>
+            <TouchableOpacity onPress={onClose} style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.18)', alignItems: 'center', justifyContent: 'center' }}>
+              <ChevronLeft color="#fff" size={22} />
             </TouchableOpacity>
-            <View style={{ backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 }}>
+            <View style={{ backgroundColor: 'rgba(255,255,255,0.22)', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 }}>
               <Text style={{ color: '#fff', fontSize: 11, fontWeight: '600' }}>미리보기</Text>
             </View>
           </View>
 
-          {/* 히어로 — 가로 레이아웃 */}
-          <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24 }}>
-            <View style={{ width: 72, height: 72, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
+          {/* Store info */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 22, paddingTop: 4, gap: 14 }}>
+            <View style={{ width: 72, height: 72, borderRadius: 16, backgroundColor: '#fff', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
               {storeInfo.storeImage ? (
-                <Image source={{ uri: storeInfo.storeImage }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                <FallbackImage
+                  uri={storeInfo.storeImage}
+                  style={{ width: '100%', height: '100%' }}
+                  resizeMode="cover"
+                  compact
+                />
               ) : (
-                <Building2 color="#fff" size={30} />
+                <Building2 color="#9AA3AF" size={30} />
               )}
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 20, fontWeight: '900', color: '#fff', marginBottom: 4 }}>{storeInfo.name}</Text>
-              <Text style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', marginBottom: 8 }}>{storeInfo.category}</Text>
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                <TouchableOpacity
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20 }}
-                  onPress={goReviews}
-                >
-                  <Star size={12} color="#FFD700" fill="#FFD700" />
+              <Text style={{ color: '#fff', fontSize: 21, fontWeight: '700', marginBottom: 2 }}>{storeInfo.name}</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 14, marginBottom: 6 }}>{storeInfo.category}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                  <Star size={12} color="#FBBF24" fill="#FBBF24" />
                   <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{storeInfo.rating}</Text>
-                  <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>({storeInfo.reviewCount})</Text>
-                </TouchableOpacity>
+                  <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}> ({storeInfo.reviewCount})</Text>
+                </View>
+                {!!storeInfo.category && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                    <Tag size={12} color="rgba(255,255,255,0.75)" />
+                    <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13 }}>{storeInfo.category}</Text>
+                  </View>
+                )}
               </View>
             </View>
           </View>
         </View>
 
-        {/* 액션 버튼 3개 — 열(column) 레이아웃 */}
-        <View style={{ flexDirection: 'row', gap: 8, backgroundColor: '#fff', padding: 12, paddingHorizontal: 16, marginBottom: 8 }}>
-          <TouchableOpacity onPress={openDirections} style={{ flex: 1, alignItems: 'center', gap: 5, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8, backgroundColor: '#E9F8F1' }}>
-            <Navigation size={18} color="#22A06B" />
-            <Text style={{ fontSize: 12, fontWeight: '600', color: '#22A06B' }}>길찾기</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={callStore} style={{ flex: 1, alignItems: 'center', gap: 5, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8, backgroundColor: '#F5F6F7' }}>
-            <Phone size={18} color="#1F2933" />
-            <Text style={{ fontSize: 12, fontWeight: '600', color: '#1F2933' }}>전화</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={goReviews} style={{ flex: 1, alignItems: 'center', gap: 5, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8, backgroundColor: '#F5F6F7' }}>
-            <MessageSquare size={18} color="#1F2933" />
-            <Text style={{ fontSize: 12, fontWeight: '600', color: '#1F2933' }}>리뷰</Text>
-          </TouchableOpacity>
-        </View>
-
         <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-          {/* 매장 기본 정보 */}
-          <View style={{ backgroundColor: '#fff', marginBottom: 8, paddingHorizontal: 16, paddingVertical: 4 }}>
-            <PreviewInfoRow icon={<MapPin size={15} color="#9AA3AF" />} label="주소" value={storeInfo.address} />
-            <PreviewInfoRow icon={<Phone size={15} color="#9AA3AF" />} label="전화" value={storeInfo.phone} />
-            <PreviewInfoRow icon={<Clock size={15} color="#9AA3AF" />} label="영업시간" value={buildSummaryHours()} />
+          {/* Action buttons */}
+          <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 16, gap: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
+            <TouchableOpacity activeOpacity={0.8} onPress={openDirections} style={{ flex: 1, backgroundColor: '#E9F8F1', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
+              <Navigation color="#22A06B" size={20} />
+              <Text style={{ color: '#22A06B', fontSize: 12, fontWeight: '700' }}>길찾기</Text>
+            </TouchableOpacity>
+            <TouchableOpacity activeOpacity={0.8} onPress={callStore} style={{ flex: 1, backgroundColor: '#F5F6F7', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
+              <Phone color="#374151" size={20} />
+              <Text style={{ color: '#374151', fontSize: 12, fontWeight: '600' }}>전화</Text>
+            </TouchableOpacity>
+            <TouchableOpacity activeOpacity={0.8} onPress={goReviews} style={{ flex: 1, backgroundColor: '#F5F6F7', borderRadius: 14, paddingVertical: 14, alignItems: 'center', gap: 5 }}>
+              <MessageSquare color="#374151" size={20} />
+              <Text style={{ color: '#374151', fontSize: 12, fontWeight: '600' }}>리뷰</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Info rows */}
+          <View style={{ paddingHorizontal: 16, paddingVertical: 16, gap: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
+            <PreviewInfoRow icon={<MapPin color="#9AA3AF" size={15} />} label="주소" value={storeInfo.address} />
+            <PreviewInfoRow icon={<Phone color="#9AA3AF" size={15} />} label="전화" value={storeInfo.phone} />
+            <PreviewInfoRow icon={<Clock color="#9AA3AF" size={15} />} label="영업시간" value={buildSummaryHours()} />
             {pickupTime && (
-              <PreviewInfoRow icon={<Clock size={15} color="#FF8A3D" />} label="픽업시간" value={pickupTime} highlight isLast />
-            )}
-            {!!storeInfo.description && (
-              <Text style={{ fontSize: 13, color: '#9AA3AF', lineHeight: 21, paddingVertical: 12 }}>{storeInfo.description}</Text>
+              <PreviewInfoRow icon={<Clock color="#FF8A3D" size={15} />} label="픽업 마감" value={pickupTime} highlight />
             )}
           </View>
 
-          {/* 해시태그 */}
+          {/* Description */}
+          {!!storeInfo.description && (
+            <View style={{ paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
+              <Text style={{ fontSize: 14, color: '#374151', lineHeight: 22 }}>{storeInfo.description}</Text>
+            </View>
+          )}
+
+          {/* Tags */}
           {storeInfo.tags.length > 0 && (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, backgroundColor: '#fff', padding: 10, paddingHorizontal: 16, marginBottom: 8 }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
               {storeInfo.tags.map(tag => (
-                <View key={tag} style={{ backgroundColor: '#E9F8F1', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 }}>
-                  <Text style={{ fontSize: 12, color: '#22A06B', fontWeight: '600' }}>#{tag}</Text>
+                <View key={tag} style={{ backgroundColor: '#E9F8F1', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 }}>
+                  <Text style={{ color: '#22A06B', fontSize: 13 }}>#{tag}</Text>
                 </View>
               ))}
             </View>
           )}
 
-          {/* 탭 바 */}
-          <View style={{ flexDirection: 'row', backgroundColor: '#fff', borderBottomWidth: 2, borderBottomColor: '#F5F6F7', marginBottom: 8 }}>
+          {/* Tabs */}
+          <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
             <TouchableOpacity
               activeOpacity={1}
               onPress={() => setPreviewTab('products')}
-              style={{ flex: 1, paddingVertical: 13, alignItems: 'center', borderBottomWidth: 2.5, borderBottomColor: previewTab === 'products' ? '#22A06B' : 'transparent', marginBottom: -2 }}
+              style={{ flex: 1, paddingVertical: 14, alignItems: 'center', borderBottomWidth: 2.5, borderBottomColor: previewTab === 'products' ? '#22A06B' : 'transparent' }}
             >
-              <Text style={{ fontSize: 14, color: previewTab === 'products' ? '#22A06B' : '#9AA3AF', fontWeight: previewTab === 'products' ? '800' : '400' }}>
+              <Text style={{ fontSize: 14, fontWeight: '600', color: previewTab === 'products' ? '#22A06B' : '#9AA3AF' }}>
                 {`판매 상품 ${sellingProducts.length}개`}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               activeOpacity={1}
               onPress={() => setPreviewTab('info')}
-              style={{ flex: 1, paddingVertical: 13, alignItems: 'center', borderBottomWidth: 2.5, borderBottomColor: previewTab === 'info' ? '#22A06B' : 'transparent', marginBottom: -2 }}
+              style={{ flex: 1, paddingVertical: 14, alignItems: 'center', borderBottomWidth: 2.5, borderBottomColor: previewTab === 'info' ? '#22A06B' : 'transparent' }}
             >
-              <Text style={{ fontSize: 14, color: previewTab === 'info' ? '#22A06B' : '#9AA3AF', fontWeight: previewTab === 'info' ? '800' : '400' }}>매장 정보</Text>
+              <Text style={{ fontSize: 14, fontWeight: '600', color: previewTab === 'info' ? '#22A06B' : '#9AA3AF' }}>매장 정보</Text>
             </TouchableOpacity>
           </View>
 
-          {/* 탭 콘텐츠 */}
+          {/* Tab content */}
           {previewTab === 'products' ? (
-            <View>
-              {sellingProducts.length === 0 && soldoutProducts.length === 0 ? (
-                <View style={{ alignItems: 'center', paddingTop: 40, paddingHorizontal: 16 }}>
-                  <Text style={{ fontSize: 40, marginBottom: 10 }}>🛒</Text>
-                  <Text style={{ fontSize: 14, color: '#9AA3AF' }}>현재 판매 중인 상품이 없습니다</Text>
+            <View style={{ backgroundColor: '#F5F6F7', padding: 14, gap: 12 }}>
+              {sellingProducts.length === 0 ? (
+                <View style={{ paddingVertical: 60, alignItems: 'center' }}>
+                  <Text style={{ color: '#9CA3AF', fontSize: 15 }}>판매 중인 상품이 없습니다</Text>
                 </View>
               ) : (
-                <>
-                  {sellingProducts.map(product => (
-                    <PreviewProductRow key={product.id} product={product} storeInfo={storeInfo} onPress={setPreviewProduct} />
-                  ))}
-                  {soldoutProducts.length > 0 && (
-                    <View>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#9AA3AF', marginBottom: 10, marginTop: 8, paddingHorizontal: 16 }}>품절 / 판매 종료</Text>
-                      {soldoutProducts.map(product => (
-                        <PreviewProductRow key={product.id} product={product} storeInfo={storeInfo} soldout />
-                      ))}
-                    </View>
-                  )}
-                </>
+                sellingProducts.map(product => (
+                  <PreviewProductCard key={product.id} product={product} storeInfo={storeInfo} />
+                ))
               )}
             </View>
           ) : (
-            <View style={{ paddingTop: 12, paddingHorizontal: 16 }}>
-              {!!storeInfo.notice && (
-                <View style={{ backgroundColor: '#FFF8E6', borderRadius: 12, padding: 14, marginBottom: 12 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#FF8A3D', marginBottom: 6 }}>📢 매장 공지</Text>
-                  <Text style={{ fontSize: 13, color: '#7A5C1E', lineHeight: 20 }}>{storeInfo.notice}</Text>
-                </View>
-              )}
-
-              {/* 지도 플레이스홀더 */}
-              <View style={{ height: 160, borderRadius: 14, backgroundColor: '#E8F4E8', overflow: 'hidden', marginBottom: 12, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ fontSize: 28 }}>📍</Text>
-                <View style={{ marginTop: 6, backgroundColor: '#22A06B', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5 }}>
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#fff' }}>{storeInfo.name}</Text>
-                </View>
-              </View>
-
-              {/* 상세 주소 + 길찾기 */}
-              <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12 }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#1F2933', marginBottom: 6 }}>상세 주소</Text>
-                <Text style={{ fontSize: 13, color: '#9AA3AF', marginBottom: 12 }}>{storeInfo.address || '-'}</Text>
-                <TouchableOpacity
-                  onPress={openDirections}
-                  style={{ backgroundColor: '#E9F8F1', borderRadius: 10, padding: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}
-                >
-                  <Navigation size={15} color="#22A06B" />
-                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#22A06B' }}>길찾기</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* 영업시간 (요일별) */}
-              <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12 }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#1F2933', marginBottom: 10 }}>영업시간</Text>
-                {DAY_KEYS.map(k => {
+            <View>
+              {/* Store detail */}
+              <View style={{ padding: 16 }}>
+                {!!storeInfo.notice && (
+                  <View style={{ backgroundColor: '#FFF4ED', borderRadius: 12, padding: 14, marginBottom: 16 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#FF8A3D', marginBottom: 4 }}>매장 공지</Text>
+                    <Text style={{ fontSize: 13, color: '#374151', lineHeight: 20 }}>{storeInfo.notice}</Text>
+                  </View>
+                )}
+                <PreviewDetailRow label="주소" value={storeInfo.address} />
+                <PreviewDetailRow label="전화" value={storeInfo.phone} />
+                <PreviewDetailRow label="카테고리" value={storeInfo.category} />
+                {DAY_KEYS.map((k, i) => {
                   const d = storeInfo.openHours?.days?.[k];
                   return (
-                    <View key={k} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
-                      <Text
-                        style={{
-                          width: 20, fontSize: 13, fontWeight: '600',
-                          color: k === 'sun' ? '#E5484D' : k === 'sat' ? '#3B82F6' : '#374151',
-                        }}
-                      >
-                        {DAY_LABELS[k]}
-                      </Text>
+                    <View key={k} style={{ flexDirection: 'row', paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#F9FAFB' }}>
+                      <Text style={{ fontSize: 13, color: '#9AA3AF', width: 60 }}>{i === 0 ? '영업시간' : ''}</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', width: 20, color: k === 'sun' ? '#E5484D' : k === 'sat' ? '#3B82F6' : '#374151' }}>{DAY_LABELS[k]}</Text>
                       <Text style={{ fontSize: 13, color: d?.isOpen ? '#1F2933' : '#9CA3AF', flex: 1 }}>
                         {d?.isOpen ? `${d.open} ~ ${d.close}` : '휴무'}
                       </Text>
@@ -1512,306 +1754,78 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
           <View style={{ height: 40 }} />
         </ScrollView>
       </View>
-
-      <ProductPreviewModal
-        visible={!!previewProduct}
-        product={previewProduct}
-        storeInfo={storeInfo}
-        onClose={() => setPreviewProduct(null)}
-      />
     </Modal>
   );
 }
 
-function PreviewInfoRow({ icon, label, value, highlight = false, isLast = false }) {
+function PreviewInfoRow({ icon, label, value, highlight = false }) {
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 9, borderBottomWidth: isLast ? 0 : 1, borderBottomColor: '#F5F6F7' }}>
-      <View style={{ width: 24, marginTop: 1 }}>{icon}</View>
-      <Text style={{ fontSize: 12, color: '#9AA3AF', width: 52, flexShrink: 0 }}>{label}</Text>
-      <Text
-        style={{ flex: 1, fontSize: 13, color: highlight ? '#FF8A3D' : '#1F2933', fontWeight: highlight ? '700' : '400', lineHeight: 18 }}
-        numberOfLines={2}
-      >
-        {value || '-'}
-      </Text>
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+      <View style={{ marginTop: 1 }}>{icon}</View>
+      <Text style={{ fontSize: 14, color: '#9AA3AF', width: 52 }}>{label}</Text>
+      <Text style={{ fontSize: 14, color: highlight ? '#FF8A3D' : '#374151', flex: 1, fontWeight: highlight ? '700' : '400', lineHeight: 20 }}>{value}</Text>
     </View>
   );
 }
 
-function getPreviewBadgeStyle(b) {
-  if (b.includes('마감') || b === '오늘까지') return { bg: '#FFF7ED', text: '#C2410C' };
-  if (b.includes('할인')) return { bg: '#EFF6FF', text: '#1D4ED8' };
-  return { bg: '#E9F8F1', text: '#15803D' };
-}
-
-function PreviewProductRow({ product, storeInfo, soldout = false, onPress }) {
-  const badges = (product.badges || []).filter(b => b !== '품절');
+function PreviewProductCard({ product, storeInfo }) {
   return (
-    <TouchableOpacity
-      activeOpacity={soldout ? 1 : 0.75}
-      onPress={() => !soldout && onPress?.(product)}
-      style={{
-        flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-        paddingHorizontal: 16, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#EFEFEF',
-        gap: 14, opacity: soldout ? 0.55 : 1,
-      }}
-    >
-      {/* 이미지 */}
-      <View style={{ width: 110, height: 110, borderRadius: 12, overflow: 'hidden', backgroundColor: '#F0F5F2', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+    <View style={{ backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden', elevation: 1 }}>
+      {/* Image area */}
+      <View style={{ height: 190, backgroundColor: '#F5F6F7', alignItems: 'center', justifyContent: 'center' }}>
         {product.thumbnail ? (
-          <Image source={{ uri: product.thumbnail }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          <FallbackImage
+            uri={product.thumbnail}
+            style={{ width: '100%', height: '100%' }}
+            resizeMode="cover"
+          />
         ) : (
-          <Text style={{ fontSize: 42 }}>{product.emoji}</Text>
+          <Text style={{ fontSize: 72 }}>{product.emoji}</Text>
         )}
-        {soldout && (
-          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.38)', alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>품절</Text>
-          </View>
-        )}
+        {/* Top-left badges */}
+        <View style={{ position: 'absolute', top: 10, left: 10, flexDirection: 'row', gap: 6 }}>
+          {product.badges?.map(b => (
+            <View key={b} style={{ backgroundColor: b === '오늘까지' ? '#FFF4ED' : '#E9F8F1', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+              <Text style={{ color: b === '오늘까지' ? '#FF8A3D' : '#22A06B', fontSize: 11, fontWeight: '600' }}>{b}</Text>
+            </View>
+          ))}
+          {product.discountRate > 0 && (
+            <View style={{ backgroundColor: '#E9F8F1', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+              <Text style={{ color: '#22A06B', fontSize: 11, fontWeight: '600' }}>할인{product.discountRate}%</Text>
+            </View>
+          )}
+        </View>
+        {/* Top-right discount pill */}
+        <View style={{ position: 'absolute', top: 10, right: 10, backgroundColor: '#22A06B', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 }}>
+          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>-{product.discountRate}%</Text>
+        </View>
+        {/* Bottom-right heart */}
+        <TouchableOpacity activeOpacity={0.8} style={{ position: 'absolute', bottom: 10, right: 12 }}>
+          <Heart color="#D1D5DB" size={20} />
+        </TouchableOpacity>
       </View>
 
-      {/* 정보 */}
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 15, fontWeight: '700', color: '#1F2933', marginBottom: 2 }} numberOfLines={1}>{product.name}</Text>
-        <Text style={{ fontSize: 12, color: '#9AA3AF', marginBottom: 4 }} numberOfLines={1}>{storeInfo.name}</Text>
-
-        {/* 가격 행 */}
-        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 5, marginBottom: 5 }}>
-          <Text style={{ fontSize: 15, fontWeight: '900', color: '#E53935' }}>{product.discountRate}%</Text>
-          <Text style={{ fontSize: 15, fontWeight: '900', color: '#1F2933' }}>{product.salePrice.toLocaleString()}원</Text>
-          <Text style={{ fontSize: 12, color: '#9AA3AF', textDecorationLine: 'line-through' }}>{product.originalPrice.toLocaleString()}원</Text>
-        </View>
-
-        {/* 별점 · 남은 수량 */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <Star size={11} color="#FACC15" fill="#FACC15" />
-          <Text style={{ fontSize: 12, fontWeight: '700', color: '#1F2933' }}>{storeInfo.rating}</Text>
-          <Text style={{ fontSize: 11, color: '#9AA3AF' }}>({storeInfo.reviewCount})</Text>
-          <Text style={{ fontSize: 11, color: '#CCC' }}>·</Text>
-          <Text style={{ fontSize: 11, color: '#9AA3AF' }}>남은 수량 {product.stock}개</Text>
-        </View>
-
-        {/* 픽업 시간 */}
-        {!!product.pickupStart && (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}>
-            <Clock size={11} color="#FF8A3D" />
-            <Text style={{ fontSize: 12, color: '#FF8A3D' }}>
-              픽업 {fmtPreviewTime(product.pickupStart)}~{fmtPreviewTime(product.pickupEnd)}
-            </Text>
-          </View>
-        )}
-
-        {/* 뱃지 */}
-        {badges.length > 0 && (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 7 }}>
-            {badges.map((b, i) => {
-              const s = getPreviewBadgeStyle(b);
-              return (
-                <View key={i} style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: s.bg }}>
-                  <Text style={{ fontSize: 10, fontWeight: '700', color: s.text }}>{b}</Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
+      {/* Info */}
+      <View style={{ padding: 14 }}>
+        <Text style={{ fontSize: 16, fontWeight: '700', color: '#1F2933', marginBottom: 3 }}>{product.name}</Text>
+        <Text style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 8 }}>{storeInfo.name}</Text>
+        <Text style={{ fontSize: 13, color: '#9CA3AF', textDecorationLine: 'line-through', marginBottom: 2 }}>
+          {product.originalPrice.toLocaleString()}원
+        </Text>
+        <Text style={{ fontSize: 18, fontWeight: '700', color: '#1F2933' }}>
+          {product.salePrice.toLocaleString()}원
+        </Text>
       </View>
-
-      <Heart size={20} color="#CACACA" />
-    </TouchableOpacity>
+    </View>
   );
 }
 
-// ─── Product Preview Modal (소비자 앱 ProductDetailScreen과 동일한 스타일) ──
-function fmtPreviewDate(iso) {
-  const d = new Date(iso);
-  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function ProductPreviewModal({ visible, product, storeInfo, onClose }) {
-  const [qty, setQty] = useState(1);
-  const [expandedSection, setExpandedSection] = useState(null);
-
-  if (!product) return null;
-
-  const now = new Date();
-  const isExpired = new Date(product.expiryDate) < now;
-  const isPickupEnded = new Date(product.pickupEnd) < now;
-  const isSoldout = product.status === 'soldout' || product.stock === 0;
-
-  let btnLabel = `${(product.salePrice * qty).toLocaleString()}원 예약하기`;
-  let btnDisabled = false;
-  if (isSoldout) { btnLabel = '품절된 상품입니다'; btnDisabled = true; }
-  else if (isPickupEnded || isExpired) { btnLabel = '판매가 종료되었습니다'; btnDisabled = true; }
-
-  const allergyInfo = (product.allergens?.length ?? 0) > 0
-    ? `${product.allergens.join(', ')} 함유`
-    : '해당 없음';
-
-  const sections = [
-    { key: 'composition', label: '상품 구성', content: product.composition || '-' },
-    { key: 'origin', label: '원산지 정보', content: product.origin || '-' },
-    { key: 'allergy', label: '알레르기 정보', content: allergyInfo },
-    { key: 'storage', label: '보관 방법', content: product.storageDetail || product.storage || '-' },
-    { key: 'expiry', label: '소비기한', content: fmtPreviewDate(product.expiryDate) },
-    { key: 'pickupTime', label: '픽업 가능 시간', content: `${fmtPreviewTime(product.pickupStart)} ~ ${fmtPreviewTime(product.pickupEnd)}` },
-    { key: 'cancel', label: '취소/환불 규정', content: product.cancelPolicy || '-' },
-    ...(product.storeNotice ? [{ key: 'notice', label: '매장 공지', content: product.storeNotice }] : []),
-  ];
-
+function PreviewDetailRow({ label, value }) {
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: '#F5F6F7' }}>
-        <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-          {/* 이미지 영역 (오버레이 헤더 포함) */}
-          <View style={{ height: 280, backgroundColor: '#E8F0E8', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-            {product.thumbnail ? (
-              <Image source={{ uri: product.thumbnail }} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} resizeMode="cover" />
-            ) : (
-              <Text style={{ fontSize: 100 }}>{product.emoji}</Text>
-            )}
-
-            {/* 상단 버튼 바 */}
-            <View style={{ position: 'absolute', top: 44, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 14 }}>
-              <TouchableOpacity onPress={onClose} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' }}>
-                <ChevronLeft size={20} color="#1F2933" />
-              </TouchableOpacity>
-              <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' }}>
-                <Heart size={18} color="#1F2933" />
-              </View>
-            </View>
-
-            {/* 배지 */}
-            {product.badges?.length > 0 && (
-              <View style={{ position: 'absolute', bottom: 12, left: 12, flexDirection: 'row', gap: 6 }}>
-                {product.badges.map(b => (
-                  <View
-                    key={b}
-                    style={{
-                      backgroundColor: (b.includes('마감') || b.includes('오늘까지')) ? '#FF8A3D' : b.includes('할인') ? '#3B82F6' : '#22A06B',
-                      paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8,
-                    }}
-                  >
-                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{b}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-
-          {/* 기본 정보 카드 */}
-          <View style={{ backgroundColor: '#fff', padding: 16, marginBottom: 8 }}>
-            <Text style={{ fontSize: 20, fontWeight: '800', color: '#1F2933', marginBottom: 6 }}>{product.name}</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingBottom: 16, paddingTop: 2 }}>
-              <Building2 size={13} color="#22A06B" />
-              <Text style={{ fontSize: 14, fontWeight: '600', color: '#22A06B' }}>{storeInfo.name}</Text>
-            </View>
-
-            <View style={{ marginBottom: 4 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Text style={{ fontSize: 13, color: '#9AA3AF', textDecorationLine: 'line-through' }}>정가 {product.originalPrice.toLocaleString()}원</Text>
-                <View style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#E5484D' }}>{product.discountRate}%</Text>
-                </View>
-              </View>
-              <Text style={{ fontSize: 28, fontWeight: '900', color: '#22A06B' }}>{product.salePrice.toLocaleString()}원</Text>
-            </View>
-          </View>
-
-          {/* 정보 그리드 카드 */}
-          <View style={{ backgroundColor: '#fff', padding: 16, marginBottom: 8 }}>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-              {[
-                { label: '남은 수량', value: isSoldout ? '품절' : `${product.stock}개`, warn: isSoldout },
-                { label: '픽업 가능 시간', value: `${fmtPreviewTime(product.pickupStart)}~${fmtPreviewTime(product.pickupEnd)}` },
-                { label: '소비기한', value: fmtPreviewDate(product.expiryDate), warn: isExpired },
-                { label: '보관 방법', value: product.storage },
-              ].map(item => (
-                <View key={item.label} style={{ width: '47%', backgroundColor: '#F5F6F7', borderRadius: 10, padding: 12 }}>
-                  <Text style={{ fontSize: 11, color: '#9AA3AF', marginBottom: 4 }}>{item.label}</Text>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: item.warn ? '#E5484D' : '#1F2933' }}>{item.value}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-
-          {/* 구매 전 주의사항 */}
-          <View style={{ backgroundColor: '#FFF8E6', padding: 16, marginBottom: 8 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <Text style={{ fontSize: 14, fontWeight: '700', color: '#FF8A3D' }}>⚠ 구매 전 꼭 확인해주세요</Text>
-            </View>
-            {[
-              '이 상품은 소비기한이 임박한 상품입니다.',
-              '구매 후 지정된 시간 안에 매장에서 직접 픽업해야 합니다.',
-              '픽업 후에는 식품 특성상 단순 변심 환불이 어려울 수 있습니다.',
-              '알레르기 정보와 보관 방법을 확인해주세요.',
-            ].map((t, i) => (
-              <Text key={i} style={{ fontSize: 13, color: '#7A5C1E', lineHeight: 22, marginTop: 2 }}>• {t}</Text>
-            ))}
-          </View>
-
-          {/* 픽업 장소 지도 */}
-          <View style={{ backgroundColor: '#fff', padding: 16, marginBottom: 8 }}>
-            <Text style={{ fontSize: 14, fontWeight: '800', color: '#9AA3AF', marginBottom: 12 }}>픽업 장소</Text>
-            <View style={{ height: 160, borderRadius: 14, backgroundColor: '#E8F4E8', overflow: 'hidden', marginBottom: 12, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 28 }}>📍</Text>
-              <View style={{ marginTop: 6, backgroundColor: '#22A06B', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 4 }}>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: '#fff' }}>{storeInfo.name}</Text>
-              </View>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <MapPin size={13} color="#9AA3AF" />
-              <Text style={{ flex: 1, fontSize: 13, color: '#9AA3AF' }}>{product.pickupAddress || storeInfo.address}</Text>
-            </View>
-          </View>
-
-          {/* 상세 섹션 (아코디언) */}
-          <View style={{ backgroundColor: '#fff', marginBottom: 8 }}>
-            {sections.map((sec, idx) => (
-              <View key={sec.key} style={idx > 0 ? { borderTopWidth: 1, borderTopColor: '#F5F6F7' } : undefined}>
-                <TouchableOpacity
-                  style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 14, paddingHorizontal: 16 }}
-                  onPress={() => setExpandedSection(expandedSection === sec.key ? null : sec.key)}
-                >
-                  <Text style={{ fontSize: 14, fontWeight: '600', color: '#1F2933' }}>{sec.label}</Text>
-                  {expandedSection === sec.key
-                    ? <ChevronUp size={16} color="#9AA3AF" />
-                    : <ChevronDown size={16} color="#9AA3AF" />}
-                </TouchableOpacity>
-                {expandedSection === sec.key && (
-                  <View style={{ paddingHorizontal: 16, paddingBottom: 14 }}>
-                    <Text style={{ fontSize: 13, color: '#1F2933', lineHeight: 21 }}>{sec.content}</Text>
-                  </View>
-                )}
-              </View>
-            ))}
-          </View>
-
-          <View style={{ height: 120 }} />
-        </ScrollView>
-
-        {/* 고정 하단 바 */}
-        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#F5F6F7', padding: 12, paddingBottom: 24, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-          {!btnDisabled && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', borderWidth: 1.5, borderColor: '#E8EAED', borderRadius: 12, overflow: 'hidden' }}>
-              <TouchableOpacity onPress={() => setQty(q => Math.max(1, q - 1))} style={{ width: 40, height: 48, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ fontSize: 20, color: '#1F2933', fontWeight: '500' }}>−</Text>
-              </TouchableOpacity>
-              <Text style={{ width: 32, textAlign: 'center', fontSize: 16, fontWeight: '700', color: '#1F2933' }}>{qty}</Text>
-              <TouchableOpacity onPress={() => setQty(q => Math.min(product.stock, q + 1))} style={{ width: 40, height: 48, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ fontSize: 20, color: '#1F2933', fontWeight: '500' }}>+</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-          <TouchableOpacity
-            style={{ flex: 1, backgroundColor: btnDisabled ? '#9AA3AF' : '#22A06B', borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
-            onPress={() => !btnDisabled && Alert.alert('미리보기', '실제 소비자 화면에서는 이 버튼으로 예약이 진행됩니다.')}
-            disabled={btnDisabled}
-          >
-            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '800' }}>{btnLabel}</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
+    <View style={{ flexDirection: 'row', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F9FAFB' }}>
+      <Text style={{ fontSize: 13, color: '#9AA3AF', width: 60 }}>{label}</Text>
+      <Text style={{ fontSize: 13, color: '#1F2933', flex: 1, lineHeight: 19 }}>{value || '-'}</Text>
+    </View>
   );
 }
 

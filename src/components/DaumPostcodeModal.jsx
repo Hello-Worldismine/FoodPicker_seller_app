@@ -5,8 +5,8 @@ import {
   Text,
   TouchableOpacity,
   ActivityIndicator,
+  SafeAreaView,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { X } from 'lucide-react-native';
 
@@ -25,7 +25,7 @@ body { background: #fff; }
 <script>
 function initPostcode() {
   if (!window.daum || !daum.Postcode) {
-    setTimeout(initPostcode, 200);
+    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ error: 'script_load_failed' }));
     return;
   }
   new daum.Postcode({
@@ -43,8 +43,6 @@ window.onload = initPostcode;
 </html>`;
 
 export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
-  const insets = useSafeAreaInsets();
-
   function handleMessage(event) {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -57,10 +55,10 @@ export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: '#fff', paddingTop: insets.top }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
-          <Text style={{ fontSize: 17, fontWeight: '700', color: '#1F2933' }}>주소 검색</Text>
-          <TouchableOpacity onPress={onClose} style={{ padding: 4 }}>
+      <SafeAreaView className="flex-1 bg-white">
+        <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-100">
+          <Text className="text-lg font-bold text-charcoal">주소 검색</Text>
+          <TouchableOpacity onPress={onClose} className="p-1">
             <X color="#1F2933" size={22} />
           </TouchableOpacity>
         </View>
@@ -74,13 +72,13 @@ export default function DaumPostcodeModal({ visible, onClose, onSelect }) {
           setSupportMultipleWindows={false}
           startInLoadingState
           renderLoading={() => (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <View className="flex-1 items-center justify-center">
               <ActivityIndicator color="#22A06B" />
             </View>
           )}
           style={{ flex: 1 }}
         />
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 }

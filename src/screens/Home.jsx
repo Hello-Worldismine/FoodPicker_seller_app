@@ -5,26 +5,31 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { useApp, ORDER_SELLER_STATUS, formatRelativeTime } from '../store/appStore';
-import { Plus, ClipboardList, AlertTriangle, Bell, X } from 'lucide-react-native';
-
-function formatTime(isoString) {
-  if (!isoString) return '';
-  const d = new Date(isoString);
-  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-}
+import {
+  useApp,
+  ORDER_SELLER_STATUS,
+  formatRelativeTime,
+  formatPickupDeadline,
+  formatDeadlineDuration,
+  pickupErrorMessage,
+} from '../store/appStore';
+import { Plus, ClipboardList, AlertTriangle, Bell, X, QrCode } from 'lucide-react-native';
 
 function formatPrice(n) {
   return n.toLocaleString('ko-KR') + '원';
 }
 
 const NOTIF_TYPE_COLOR = {
-  reject:     { color: '#E5484D', bg: '#FFF0F0' },
-  cancel:     { color: '#FF8A3D', bg: '#FFF4ED' },
-  settlement: { color: '#22A06B', bg: '#E9F8F1' },
+  reject:          { color: '#E5484D', bg: '#FFF0F0' },
+  cancel:          { color: '#FF8A3D', bg: '#FFF4ED' },
+  settlement:      { color: '#22A06B', bg: '#E9F8F1' },
+  coupon_approved: { color: '#22A06B', bg: '#E9F8F1' },
+  coupon_rejected: { color: '#E5484D', bg: '#FFF0F0' },
+  coupon_assigned: { color: '#FF8A3D', bg: '#FFF4ED' }, // 관리자 매장 지정 쿠폰 발급 요청
 };
 
 export default function HomeScreen() {
@@ -36,13 +41,18 @@ export default function HomeScreen() {
   const [bannerIdx, setBannerIdx] = useState(0);
 
   const sellingCount = products.filter(p => p.status === 'selling').length;
-  const newOrderCount = orders.filter(o => o.sellerStatus === 'new').length;
-  const pickupWaitCount = orders.filter(o => o.sellerStatus === 'confirmed').length;
+  // 취소요청 대기 건(cancel_request_status='requested')은 seller_status 가 아직 new/confirmed 라
+  // 그냥 세면 '예약 건수' 에 잡힌다. 주문관리 탭(Orders TAB_FILTER)은 이 건을 신규주문·픽업대기에서
+  // 빼고 '취소요청' 탭으로 분리하므로, 홈 카운트도 같은 기준을 써서 숫자가 어긋나지 않게 한다.
+  const isCancelRequested = o => o.cancelRequestStatus === 'requested';
+  const newOrderCount = orders.filter(o => o.sellerStatus === 'new' && !isCancelRequested(o)).length;
+  const pickupWaitCount = orders.filter(o => o.sellerStatus === 'confirmed' && !isCancelRequested(o)).length;
   const completedCount = orders.filter(o => o.sellerStatus === 'completed').length;
+  const cancelRequestCount = orders.filter(isCancelRequested).length;
   const unreadCount = notifications.filter(n => !n.read).length;
 
   const recentOrders = orders
-    .filter(o => o.sellerStatus === 'new' || o.sellerStatus === 'confirmed')
+    .filter(o => (o.sellerStatus === 'new' || o.sellerStatus === 'confirmed') && !isCancelRequested(o))
     .slice(0, 5);
 
   // 롤링 배너 - 화면 포커스 기준으로 관리
@@ -67,6 +77,50 @@ export default function HomeScreen() {
   function handleConfirmPause() {
     pauseSale();
     setShowPauseModal(false);
+  }
+
+  // 최근주문 카드의 버튼 하나가 상태에 따라 주문확인/픽업완료를 겸한다 → 오탭 방지용 확인 절차.
+  function handleConfirmOrder(order) {
+    Alert.alert(
+      '주문 확인',
+      `${order.id}\n${order.productName} ${order.quantity}개\n\n주문을 확인 처리하시겠습니까?`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '주문 확인',
+          onPress: async () => {
+            try {
+              await confirmOrder(order.id);
+            } catch (e) {
+              Alert.alert('주문 확인 불가', pickupErrorMessage(e));
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  // 픽업 완료는 QR 스캔이 정상 경로 — 수동 처리는 확인 후에만.
+  function handleCompletePickup(order) {
+    Alert.alert(
+      '픽업 완료 처리',
+      `${order.id}\n${order.productName} ${order.quantity}개\n\n구매자 QR 을 스캔하면 주문번호 오처리를 막을 수 있습니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        { text: 'QR 스캔', onPress: () => navigation.navigate('QrScan') },
+        {
+          text: '직접 완료',
+          onPress: async () => {
+            try {
+              await completePickup(order.id);
+              Alert.alert('픽업 완료', `${order.id} 주문의 픽업이 완료되었습니다.`);
+            } catch (e) {
+              Alert.alert('픽업 처리 불가', pickupErrorMessage(e));
+            }
+          },
+        },
+      ],
+    );
   }
 
   const headerBg = storeInfo.isSellingPaused ? '#6B7280' : '#22A06B';
@@ -172,6 +226,35 @@ export default function HomeScreen() {
 
         </View>
 
+        {/* 취소요청 알림 카드 — 위 카운트에서 빠진 건이라 여기서 눈에 띄게 다시 노출한다.
+            방치하면 구매자 환불이 계속 지연되므로 놓쳐서는 안 되는 항목이다. */}
+        {cancelRequestCount > 0 && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('Orders', { initialTab: 'cancelRequested' })}
+            style={{
+              marginHorizontal: 16, marginBottom: 12,
+              backgroundColor: '#FFF0F0', borderRadius: 16,
+              borderWidth: 1, borderColor: '#F6CACB',
+              paddingHorizontal: 16, paddingVertical: 14,
+              flexDirection: 'row', alignItems: 'center', gap: 12,
+            }}
+          >
+            <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' }}>
+              <AlertTriangle color="#E5484D" size={20} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: '#E5484D', marginBottom: 2 }}>
+                취소요청 {cancelRequestCount}건
+              </Text>
+              <Text style={{ fontSize: 12, color: '#B4585B', lineHeight: 17 }}>
+                구매자가 주문 취소를 요청했습니다. 승인 또는 거절을 처리해주세요.
+              </Text>
+            </View>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#E5484D' }}>처리하기</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Quick Action Buttons */}
         <View style={{ flexDirection: 'row', paddingHorizontal: 16, gap: 12, marginBottom: 16 }}>
           <TouchableOpacity
@@ -204,9 +287,20 @@ export default function HomeScreen() {
         <View style={{ marginHorizontal: 16, marginBottom: 24, backgroundColor: '#fff', borderRadius: 16, elevation: 1, overflow: 'hidden' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' }}>
             <Text style={{ fontWeight: '700', color: '#1F2933', fontSize: 16 }}>최근 주문</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('Orders')}>
-              <Text style={{ color: '#22A06B', fontSize: 14 }}>전체보기</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              {/* QR 픽업 진입 */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => navigation.navigate('QrScan')}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#1F2933', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 7 }}
+              >
+                <QrCode color="#fff" size={14} />
+                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>QR 픽업</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => navigation.navigate('Orders')}>
+                <Text style={{ color: '#22A06B', fontSize: 14 }}>전체보기</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {recentOrders.length === 0 ? (
@@ -230,8 +324,13 @@ export default function HomeScreen() {
                       <Text style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>{order.id}</Text>
                       <Text style={{ fontWeight: '600', color: '#1F2933', fontSize: 16, marginBottom: 3 }}>{order.productName}</Text>
                       <Text style={{ color: '#6B7280', fontSize: 13 }}>
-                        {order.quantity}개 · 픽업 {formatTime(order.pickupStart)}~{formatTime(order.pickupEnd)}
+                        {order.quantity}개 · 픽업 마감 {formatPickupDeadline(order)}
                       </Text>
+                      {!!order.pickupDeadlineMinutes && (
+                        <Text style={{ color: '#9CA3AF', fontSize: 12, marginTop: 1 }}>
+                          주문 후 {formatDeadlineDuration(order.pickupDeadlineMinutes)}
+                        </Text>
+                      )}
                       <Text style={{ color: '#9CA3AF', fontSize: 12, marginTop: 1 }}>{order.buyerName}</Text>
                     </View>
                     <View style={{ backgroundColor: statusInfo?.bg || '#F5F6F7', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3, marginLeft: 8 }}>
@@ -243,7 +342,7 @@ export default function HomeScreen() {
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     <TouchableOpacity
                       style={{ flex: 1, backgroundColor: '#1F2933', borderRadius: 10, alignItems: 'center', paddingVertical: 11 }}
-                      onPress={() => order.sellerStatus === 'new' ? confirmOrder(order.id) : completePickup(order.id)}
+                      onPress={() => order.sellerStatus === 'new' ? handleConfirmOrder(order) : handleCompletePickup(order)}
                     >
                       <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
                         {order.sellerStatus === 'new' ? '주문 확인' : '픽업 확인'}

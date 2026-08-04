@@ -12,6 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useApp, PRODUCT_STATUS } from '../store/appStore';
+import { formatDeadlineClock } from '../lib/format';
 import { Plus, Minus, Edit2, MoreHorizontal, Trash2, AlertTriangle } from 'lucide-react-native';
 
 const TABS = [
@@ -21,15 +22,6 @@ const TABS = [
   { key: 'paused',  label: '판매중지' },
   { key: 'hidden',  label: '반려' },
 ];
-
-function formatPickupTime(start, end) {
-  if (!start) return '';
-  const fmt = iso => {
-    const d = new Date(iso);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  };
-  return `${fmt(start)}~${fmt(end)}`;
-}
 
 function formatExpiry(isoDate) {
   if (!isoDate) return '';
@@ -71,9 +63,35 @@ export default function ProductsScreen() {
   function handleResume(product) {
     if (product.stock === 0) {
       Alert.alert('수량 설정 필요', '판매를 재개하려면 먼저 수량을 설정해주세요.');
-    } else {
-      updateProductStatus(product.id, 'selling');
+      return;
     }
+    // 기한이 지난 상품은 재개해도 서버 스케줄러(expire_products, 5분 주기)가 다시 판매중지로
+    // 되돌린다. 판매자가 원인을 알 수 없으므로 여기서 막고 해당 값 수정으로 유도한다.
+    const goEdit = () => navigation.navigate('ProductForm', { productId: product.id });
+    if (product.expiryDate && new Date(product.expiryDate).getTime() <= Date.now()) {
+      Alert.alert(
+        '소비기한 만료',
+        '소비기한이 지나 자동으로 판매중지된 상품입니다.\n소비기한을 먼저 수정해야 판매를 재개할 수 있습니다.',
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '소비기한 수정', onPress: goEdit },
+        ],
+      );
+      return;
+    }
+    // 픽업 마감 경과(pause_reason='pickup_closed')도 동일 — 마감 시각을 미래로 고쳐야 재개된다.
+    if (product.pickupDeadlineAt && new Date(product.pickupDeadlineAt).getTime() <= Date.now()) {
+      Alert.alert(
+        '픽업 마감 경과',
+        '픽업 마감이 지나 자동으로 판매중지된 상품입니다.\n마감 시각을 먼저 수정해야 판매를 재개할 수 있습니다.',
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '마감 시각 수정', onPress: goEdit },
+        ],
+      );
+      return;
+    }
+    updateProductStatus(product.id, 'selling');
   }
 
   function openMenu(product, evt) {
@@ -165,6 +183,9 @@ export default function ProductsScreen() {
             const statusInfo = PRODUCT_STATUS[product.status];
             const expiryStr = formatExpiry(product.expiryDate);
             const expired = isExpired(product.expiryDate);
+            // 픽업 마감은 절대 시각(products.pickup_deadline_at)이 정본 — '오늘 21:00' 형태로 표기.
+            const deadlineStr = formatDeadlineClock(product.pickupDeadlineAt, false);
+            const deadlinePassed = isExpired(product.pickupDeadlineAt);
             return (
               <View
                 key={product.id}
@@ -205,9 +226,11 @@ export default function ProductsScreen() {
 
                   {/* Pickup & Expiry */}
                   <View style={{ flexDirection: 'row', gap: 12, marginTop: 10, marginBottom: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#9CA3AF' }}>
-                      픽업 {formatPickupTime(product.pickupStart, product.pickupEnd)}
-                    </Text>
+                    {!!deadlineStr && (
+                      <Text style={{ fontSize: 12, color: deadlinePassed ? '#E5484D' : '#9CA3AF' }}>
+                        픽업 마감 {deadlineStr}
+                      </Text>
+                    )}
                     <Text style={{ fontSize: 12, color: expired ? '#E5484D' : '#9CA3AF' }}>
                       소비기한 {expiryStr}
                     </Text>
@@ -277,6 +300,16 @@ export default function ProductsScreen() {
                       <AlertTriangle color="#FF8A3D" size={14} />
                       <Text style={{ fontSize: 12, color: '#FF8A3D', flex: 1, lineHeight: 18 }}>
                         소비기한이 지나 자동으로 판매 중지 처리되었습니다. 재등록 시 소비기한을 업데이트해 주세요.
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* 픽업 마감 경과 자동 판매중지 안내 (expire_products → pause_reason='pickup_closed') */}
+                  {product.status === 'paused' && product.pauseReason === 'pickup_closed' && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFF4ED', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10 }}>
+                      <AlertTriangle color="#FF8A3D" size={14} />
+                      <Text style={{ fontSize: 12, color: '#FF8A3D', flex: 1, lineHeight: 18 }}>
+                        픽업 마감이 지나 자동으로 판매 중지 처리되었습니다. 판매를 재개하려면 마감 시각을 먼저 수정해 주세요.
                       </Text>
                     </View>
                   )}

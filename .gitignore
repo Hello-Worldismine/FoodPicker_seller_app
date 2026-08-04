@@ -29,3 +29,6 @@ Thumbs.db
 # Environment variables (add if created later)
 .env
 .env.local
+
+# Supabase CLI 로컬 상태(링크된 프로젝트 등) — 커밋 대상 아님
+supabase/.temp/

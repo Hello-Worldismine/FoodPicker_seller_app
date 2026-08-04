@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
   Image, Platform, Modal, Alert, ActivityIndicator, Switch,
@@ -13,6 +13,7 @@ import { useAuth } from '../store/authStore';
 import * as api from '../lib/api';
 import { uploadImageIfLocal } from '../lib/storage';
 import DaumPostcodeModal from '../components/DaumPostcodeModal';
+import NaverGeocoder from '../components/NaverGeocoder';
 
 const CATEGORIES = ['한식', '일식', '중식', '양식', '분식', '카페/베이커리', '패스트푸드', '기타'];
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -21,9 +22,9 @@ const TOTAL_STEPS = 7;
 
 const STEP_META = {
   1: { title: '매장 기본 정보', sub: '매장명, 연락처, 카테고리를 설정해주세요' },
-  2: { title: '매장 대표 사진', sub: '고객에게 보여줄 매장 사진을 등록해주세요' },
+  2: { title: '매장 대표 사진', sub: '고객에게 보여줄 매장 사진을 등록해주세요 (필수)' },
   3: { title: '매장 소개', sub: '고객에게 전달하고 싶은 소개글을 입력해주세요' },
-  4: { title: '영업 시간', sub: '운영하는 요일과 시간을 설정해주세요' },
+  4: { title: '영업 시간', sub: '매장을 운영하는 요일과 시간을 설정해주세요' },
   5: { title: '사업자 정보', sub: '대표자 및 사업자 정보를 입력해주세요' },
   6: { title: '매장 주소', sub: '고객이 방문할 매장 위치를 입력해주세요' },
   7: { title: '정산 계좌', sub: '판매 수익을 정산받을 계좌를 입력해주세요' },
@@ -78,6 +79,8 @@ export default function OnboardingScreen() {
   const [description, setDescription] = useState('');
 
   // Step 4: 영업 시간
+  // (픽업 마감은 상품별 절대 시각(products.pickup_deadline_at)으로 바뀌어 매장 기본값을 받지 않는다.
+  //  영업 종료 시각이 상품 등록 화면의 마감 기본값으로 쓰인다 — ProductForm.defaultDeadlineDate)
   const [days, setDays] = useState(defaultDays);
   const [timePicker, setTimePicker] = useState(null);
   const [timePickerVisible, setTimePickerVisible] = useState(false);
@@ -91,9 +94,27 @@ export default function OnboardingScreen() {
   const [residentBack, setResidentBack] = useState('');
   const residentBackRef = useRef(null);
 
-  // Step 6: 매장 주소
+  // Step 6: 매장 주소 (+ 좌표 — 사용자앱 지도 표시에 필수)
   const [address, setAddress] = useState('');
+  const [coords, setCoords] = useState(null);      // { lat, lng } | null
+  const [geocoding, setGeocoding] = useState(false);
   const [showPostcode, setShowPostcode] = useState(false);
+  const geocoderRef = useRef(null);
+
+  // 주소 선택 즉시 좌표를 구해 둔다. 실패해도 입점 신청은 진행 가능
+  // (매장 관리 화면 진입 시 자동 재시도 — Store.jsx 의 좌표 자동 보정).
+  const resolveAddress = useCallback(async (addr) => {
+    setAddress(addr);
+    setCoords(null);
+    if (!addr) return;
+    setGeocoding(true);
+    try {
+      const c = await geocoderRef.current?.geocode(addr);
+      setCoords(c || null);
+    } finally {
+      setGeocoding(false);
+    }
+  }, []);
 
   // Step 7: 정산 계좌
   const [bankName, setBankName] = useState('');
@@ -102,11 +123,11 @@ export default function OnboardingScreen() {
 
   const canGoNext = () => {
     if (step === 1) return name.trim().length > 0 && phone.trim().length > 0 && category.length > 0;
-    if (step === 2) return true;
+    if (step === 2) return !!storeImage;                        // 매장 대표 사진 필수
     if (step === 3) return true;
-    if (step === 4) return true;
+    if (step === 4) return DAY_KEYS.some(k => days[k].isOpen);  // 영업일이 하루 이상 필요
     if (step === 5) return ownerName.trim().length > 0 && bizNumber.replace(/\D/g, '').length >= 10;
-    if (step === 6) return address.trim().length > 0;
+    if (step === 6) return address.trim().length > 0 && !geocoding;  // 매장 주소 필수
     if (step === 7) return !!(bankName.trim() && accountNumber.trim() && accountHolder.trim());
     return true;
   };
@@ -120,6 +141,10 @@ export default function OnboardingScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.8,
+      // iOS 는 기본값(Automatic)에서 HEIC 원본을 그대로 넘겨 업로드된 사진이 안드로이드·웹에서
+      // 렌더되지 않는다. Compatible 로 JPEG 표현을 요청한다.
+      preferredAssetRepresentationMode:
+        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
     if (!result.canceled && result.assets?.[0]) setter(result.assets[0].uri);
   }
@@ -150,6 +175,10 @@ export default function OnboardingScreen() {
       const bizCertUrl = bizCertFile ? await uploadImageIfLocal(bizCertFile, null, 'documents') : null;
       const closedDays = DAY_KEYS.filter(k => !days[k].isOpen);
 
+      // 좌표 최종 확보(주소 단계에서 실패했으면 한 번 더 시도) — 없으면 사용자앱 지도에 뜨지 않는다.
+      let geo = coords;
+      if (!geo && address.trim()) geo = await geocoderRef.current?.geocode(address.trim());
+
       await api.updateStoreRow(api.storeToDb({
         name: name.trim(),
         phone: phone.trim(),
@@ -161,6 +190,8 @@ export default function OnboardingScreen() {
         bizCertImage: bizCertUrl,
         residentNumber: residentFront && residentBack ? `${residentFront}-${residentBack}` : undefined,
         address: address.trim(),
+        lat: geo?.lat ?? undefined,
+        lng: geo?.lng ?? undefined,
         bankName: bankName.trim(),
         accountNumber: accountNumber.trim(),
         accountHolder: accountHolder.trim(),
@@ -317,8 +348,8 @@ export default function OnboardingScreen() {
               <Text style={{ color: '#22A06B', fontSize: 14, fontWeight: '600' }}>사진이 등록되었습니다</Text>
             </View>
           ) : (
-            <Text style={{ color: '#C4C9D0', fontSize: 13, textAlign: 'center', marginTop: 18 }}>
-              사진은 선택 사항입니다 · 나중에 변경할 수 있어요
+            <Text style={{ color: '#E5484D', fontSize: 13, textAlign: 'center', marginTop: 18, lineHeight: 20 }}>
+              매장 대표 사진은 필수입니다{'\n'}사용자 앱의 매장 목록·상세에 노출됩니다
             </Text>
           )}
         </View>
@@ -355,6 +386,12 @@ export default function OnboardingScreen() {
 
       // Step 4: 영업 시간
       case 4: return (
+        <View>
+        <Text style={S.label}>영업 시간 *</Text>
+        <Text style={{ fontSize: 13, color: '#9AA3AF', marginBottom: 12, lineHeight: 20 }}>
+          영업 종료 시각이 상품 등록 시 픽업 마감 기본값으로 사용됩니다.{'\n'}
+          픽업 마감은 상품마다 따로 지정할 수 있어요.
+        </Text>
         <View style={{ backgroundColor: '#fff', borderRadius: 16 }}>
           {DAY_KEYS.map((key, idx) => {
             const day = days[key];
@@ -399,6 +436,7 @@ export default function OnboardingScreen() {
               </View>
             );
           })}
+        </View>
         </View>
       );
 
@@ -512,9 +550,29 @@ export default function OnboardingScreen() {
             </View>
           </TouchableOpacity>
           {address ? (
-            <View style={{ backgroundColor: '#E9F8F1', borderRadius: 12, padding: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-              <Text style={{ fontSize: 18 }}>📍</Text>
-              <Text style={{ flex: 1, fontSize: 14, color: '#1F2933', lineHeight: 22 }}>{address}</Text>
+            <View style={{ gap: 10 }}>
+              <View style={{ backgroundColor: '#E9F8F1', borderRadius: 12, padding: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <Text style={{ fontSize: 18 }}>📍</Text>
+                <Text style={{ flex: 1, fontSize: 14, color: '#1F2933', lineHeight: 22 }}>{address}</Text>
+              </View>
+              {/* 좌표 확보 상태 — 좌표가 없으면 사용자 앱 지도에 매장이 표시되지 않는다 */}
+              {geocoding ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4 }}>
+                  <ActivityIndicator size="small" color="#22A06B" />
+                  <Text style={{ fontSize: 13, color: '#6B7280' }}>지도 위치를 확인하고 있어요…</Text>
+                </View>
+              ) : coords ? (
+                <Text style={{ fontSize: 13, color: '#22A06B', paddingHorizontal: 4 }}>
+                  ✓ 지도 위치 확인 완료
+                </Text>
+              ) : (
+                <View style={{ backgroundColor: '#FFF8ED', borderRadius: 12, padding: 14 }}>
+                  <Text style={{ fontSize: 12, color: '#B45309', lineHeight: 18 }}>
+                    지도 위치를 자동으로 찾지 못했습니다. 입점 신청은 그대로 진행되며,
+                    매장 관리 화면에서 자동으로 다시 시도합니다.
+                  </Text>
+                </View>
+              )}
             </View>
           ) : (
             <View style={{ backgroundColor: '#F5F6F7', borderRadius: 12, padding: 16, alignItems: 'center' }}>
@@ -668,12 +726,15 @@ export default function OnboardingScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Daum 주소 검색 */}
+      {/* Daum 주소 검색 → 선택 즉시 네이버 지오코더로 좌표 확보 */}
       <DaumPostcodeModal
         visible={showPostcode}
         onClose={() => setShowPostcode(false)}
-        onSelect={addr => { setAddress(addr); setShowPostcode(false); }}
+        onSelect={addr => { setShowPostcode(false); resolveAddress(addr); }}
       />
+
+      {/* 주소 → 좌표 변환기(화면에 보이지 않음) */}
+      <NaverGeocoder ref={geocoderRef} />
 
       {/* 입점 신청 완료 모달 */}
       <Modal visible={showPendingModal} transparent animationType="fade">

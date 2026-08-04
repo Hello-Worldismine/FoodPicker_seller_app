@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { useAuth } from './authStore';
 import * as api from '../lib/api';
 import { uploadImageIfLocal } from '../lib/storage';
+import { formatDeadlineMinutes } from '../lib/format';
 import { supabase } from '../lib/supabase';
 
 const AppContext = createContext(null);
@@ -17,7 +18,16 @@ export const ORDER_SELLER_STATUS = {
   new:       { label: '신규주문', userStatus: 'pending',   color: '#FF8A3D', bg: '#FFF4ED' },
   confirmed: { label: '픽업대기', userStatus: 'pending',   color: '#22A06B', bg: '#E9F8F1' },
   completed: { label: '픽업완료', userStatus: 'completed', color: '#9AA3AF', bg: '#F5F6F7' },
-  cancelled: { label: '취소요청', userStatus: 'cancelled', color: '#E5484D', bg: '#FFF0F0' },
+  cancelled: { label: '취소완료', userStatus: 'cancelled', color: '#E5484D', bg: '#FFF0F0' },
+};
+
+// 취소요청 라벨맵 — orders.cancel_request_status(마이그레이션 20260731000000)와 1:1.
+// seller_status enum 은 확장하지 않았다(구버전 클라이언트 호환) — 요청은 new/confirmed 주문에
+// 붙는 '플래그' 이므로 상태 배지도 이 맵을 따로 써서 덮어 표시한다.
+export const CANCEL_REQUEST_STATUS = {
+  requested: { label: '취소요청', color: '#E5484D', bg: '#FFF0F0' },
+  approved:  { label: '취소 승인', color: '#9AA3AF', bg: '#F5F6F7' },
+  rejected:  { label: '요청 거절', color: '#FF8A3D', bg: '#FFF4ED' },
 };
 
 // 정산 상태 라벨맵 — DB settlement_status enum(영문 키)과 1:1.
@@ -79,16 +89,75 @@ export function formatReviewDate(iso) {
   return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// pickup_start/pickup_end → '오늘/어제/내일/M.D HH:MM~HH:MM' (주문 상세)
+function hhmm(d) {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// 날짜 → '오늘' / '어제' / '내일' / 'M.D'
+function dayLabelOf(d) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diff = Math.round((day - today) / 86400000);
+  if (diff === 0) return '오늘';
+  if (diff === -1) return '어제';
+  if (diff === 1) return '내일';
+  return `${d.getMonth() + 1}.${d.getDate()}`;
+}
+
+// pickup_start/pickup_end → '오늘/어제/내일/M.D HH:MM~HH:MM'
+// [구 데이터용] 픽업 정본 표기는 아래 formatPickupDeadline 을 쓴다.
 export function formatPickupWindow(start, end) {
   if (!start) return '';
   const s = new Date(start);
-  const hm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const sDay = new Date(s); sDay.setHours(0, 0, 0, 0);
-  const dayDiff = Math.round((sDay - today) / 86400000);
-  const dayLabel = dayDiff === 0 ? '오늘' : dayDiff === -1 ? '어제' : dayDiff === 1 ? '내일' : `${s.getMonth() + 1}.${s.getDate()}`;
-  return `${dayLabel} ${hm(s)}${end ? '~' + hm(new Date(end)) : ''}`;
+  return `${dayLabelOf(s)} ${hhmm(s)}${end ? '~' + hhmm(new Date(end)) : ''}`;
+}
+
+// 주문의 '주문 후 남은 분' → '30분 이내' / '1시간 이내' / '1시간 30분 이내'
+// [주문 전용] orders.pickup_deadline_minutes 는 주문 시점 기준 남은 분(하위호환)이라 아직 의미가 있다.
+// 상품(products)의 마감은 절대 시각이 정본이므로 formatDeadlineClock(lib/format)을 쓴다 —
+// products.pickup_deadline_minutes 는 DEPRECATED 다(마이그레이션 20260730000000).
+export function formatDeadlineDuration(minutes) {
+  const label = formatDeadlineMinutes(minutes);
+  return label ? `${label} 이내` : '';
+}
+
+// 픽업 마감 시각 → '오늘 18:30까지' / '어제 21:00까지'
+// 인자: (order 객체) 또는 (pickup_deadline_at) 또는 (ordered_at, pickup_deadline_minutes).
+// pickup_deadline_at 이 없는 구 주문도 ordered_at + 분으로 마감시각을 복원한다.
+export function formatPickupDeadline(source, minutes) {
+  let deadline = null;
+  if (source && typeof source === 'object' && !(source instanceof Date)) {
+    const o = source;
+    if (o.pickupDeadlineAt) deadline = new Date(o.pickupDeadlineAt);
+    else if (o.orderedAt) deadline = new Date(new Date(o.orderedAt).getTime() + (o.pickupDeadlineMinutes ?? 60) * 60000);
+    else if (o.pickupEnd) deadline = new Date(o.pickupEnd); // 구 데이터 폴백
+  } else if (source) {
+    const base = new Date(source);
+    const m = Number(minutes);
+    deadline = Number.isFinite(m) && m > 0 ? new Date(base.getTime() + m * 60000) : base;
+  }
+  if (!deadline || Number.isNaN(deadline.getTime())) return '';
+  return `${dayLabelOf(deadline)} ${hhmm(deadline)}까지`;
+}
+
+// complete_pickup / respond_order_cancel / seller_cancel_order RPC 의 대문자 에러상수
+// → 판매자용 한국어 안내.
+export function pickupErrorMessage(err) {
+  const msg = String(err?.message || '');
+  if (msg.includes('ALREADY_COMPLETED')) return '이미 픽업 완료된 주문입니다.';
+  if (msg.includes('ORDER_CANCELLED') || msg.includes('ALREADY_CANCELLED')) return '이미 취소된 주문입니다.';
+  // ── 판매자 자발 취소(seller_cancel_order) — 신규주문/픽업대기 단계에서만 취소할 수 있다 ──
+  if (msg.includes('NOT_CANCELLABLE')) return '이미 처리된 주문이라 취소할 수 없습니다.';
+  // ── 취소요청 흐름(respond_order_cancel) ──
+  if (msg.includes('NO_PENDING_REQUEST')) return '대기 중인 취소 요청이 없습니다. 이미 처리되었거나 구매자가 요청을 취소했을 수 있습니다.';
+  if (msg.includes('ALREADY_APPROVED')) return '이미 승인 처리된 취소 요청입니다.';
+  if (msg.includes('ALREADY_REQUESTED')) return '이미 취소 요청이 접수된 주문입니다.';
+  if (msg.includes('WINDOW_EXPIRED')) return '취소 요청 가능 시간(주문 후 10분)이 지났습니다.';
+  if (msg.includes('NOT_PAID')) return '결제가 완료되지 않은 주문입니다.';
+  if (msg.includes('ORDER_NOT_FOUND') || msg.includes('NOT_MY_ORDER')) return '우리 매장 주문이 아닙니다.';
+  if (msg.includes('INVALID_CODE')) return '주문번호를 인식할 수 없습니다.';
+  if (msg.includes('NOT_AUTHENTICATED')) return '로그인이 필요합니다. 다시 로그인해주세요.';
+  return msg || '픽업 완료 처리에 실패했습니다.';
 }
 
 function withBadges(p) {
@@ -242,18 +311,39 @@ export function AppProvider({ children }) {
   };
 
   // ── 주문 (상태 전이 시각은 stamp 트리거가 자동 기록) ──
-  const completePickup = async (orderId) => {
-    try { await api.updateOrderStatus(orderId, 'completed'); await reloadOrders(); }
-    catch (e) { console.warn('[픽업 완료]', e.message); }
+  // 픽업 완료는 complete_pickup RPC 단독 경로 — 상태/결제 검증과 동시 스캔 직렬화를 서버가 한다.
+  // 실패를 삼키면 판매자가 완료된 줄 알고 상품을 내주게 되므로 반드시 throw 한다(호출부에서 Alert).
+  const completePickup = async (orderCode) => {
+    const order = await api.completePickupByQr(orderCode);
+    await reloadOrders();
+    return order;
   };
-  const confirmOrder = async (orderId) => {
-    try { await api.updateOrderStatus(orderId, 'confirmed'); await reloadOrders(); }
-    catch (e) { console.warn('[주문 확인]', e.message); }
+  // 스캔 직후 확인 시트용 조회(본인 매장 주문이 아니면 null).
+  const lookupOrderForPickup = (orderCode) => api.lookupOrderForPickup(orderCode);
+  // 주문 확인/취소도 실패를 삼키지 않는다 — 삼키면 버튼이 먹통인 것처럼 보여
+  // 판매자가 원인을 알 수 없다(호출부에서 try/catch + Alert).
+  const confirmOrder = async (orderCode) => {
+    await api.updateOrderStatus(orderCode, 'confirmed');
+    await reloadOrders();
   };
-  const cancelOrder = async (orderId, reason) => {
-    const extra = reason && reason.trim() ? { cancel_reason: reason.trim() } : {};
-    try { await api.updateOrderStatus(orderId, 'cancelled', extra); await reloadOrders(); }
-    catch (e) { console.warn('[주문 취소]', e.message); }
+  // 판매자 자발 취소 — api 가 'PG 전액취소 → seller_cancel_order RPC' 순서로 처리한다.
+  // (이전에는 상태만 바꿔서 구매자 카드 결제가 승인 상태로 남았다 = 돈이 돌아가지 않았다)
+  // 수수료 0원·전액 환불 기록과 재고·쿠폰 복구는 승인 경로와 똑같이 서버 RPC 몫이다.
+  const cancelOrder = async (orderCode, reason) => {
+    await api.cancelOrderWithRefund(orderCode, reason);
+    await reloadOrders();
+  };
+
+  // ── 구매자 취소요청 응답 (respond_order_cancel) ──
+  // 승인은 api 가 'PG 전액취소 → RPC' 순서로 처리한다. 수수료 0원·환불액 기록은 서버 몫.
+  // 취소/픽업과 마찬가지로 실패를 삼키지 않는다 — 삼키면 버튼이 먹통으로 보인다.
+  const approveCancelRequest = async (orderCode, reason) => {
+    await api.respondOrderCancel(orderCode, true, reason);
+    await reloadOrders();
+  };
+  const rejectCancelRequest = async (orderCode, reason) => {
+    await api.respondOrderCancel(orderCode, false, reason);
+    await reloadOrders();
   };
 
   // ── 리뷰 ──
@@ -287,7 +377,8 @@ export function AppProvider({ children }) {
     pauseSale, resumeSale,
     updateProductStock, updateProductStatus,
     addProduct, updateProduct, deleteProduct,
-    completePickup, confirmOrder, cancelOrder,
+    completePickup, lookupOrderForPickup, confirmOrder, cancelOrder,
+    approveCancelRequest, rejectCancelRequest,
     updateReviewReply,
     notifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   };
