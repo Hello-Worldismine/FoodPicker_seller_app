@@ -274,10 +274,21 @@ export async function fetchProducts() {
   if (error) throw error;
   return (data || []).map(mapProduct);
 }
+// ★ seller_id 필터는 필수다. RLS 만 믿으면 안 된다.
+//   orders 에는 SELECT 정책이 두 개 걸려 있고 둘은 OR 로 합쳐진다.
+//     · orders_select     : seller_id = auth.uid()   (20260706000000_init.sql:445)
+//     · orders_buyer_read : buyer_id  = auth.uid()   (20260707000000_followups.sql:117)
+//   그래서 필터 없이 조회하면 '내가 구매자로 산 주문' 까지 주문관리에 섞여 들어온다.
+//   그 주문들은 orders_update(using seller_id = auth.uid()) 에 걸려 상태 변경이 0행이 되고,
+//   화면에는 '주문을 변경할 수 없습니다' 만 뜬다 — 판매자가 원인을 알 수 없는 형태로 실패한다.
+//   (판매자 계정으로 사용자앱에서 테스트 주문을 하면 바로 재현된다)
 export async function fetchOrders() {
+  const uid = await currentUid();
+  if (!uid) return [];
   const { data, error } = await supabase
     .from('orders')
     .select('*, products(thumbnail, emoji)')
+    .eq('seller_id', uid)
     .order('ordered_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapOrder);
