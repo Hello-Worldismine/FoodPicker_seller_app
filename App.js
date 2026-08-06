@@ -1,11 +1,12 @@
 import './global.css';
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useEffect } from 'react';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
+import * as Notifications from 'expo-notifications';
 
 import { AppProvider, useApp } from './src/store/appStore';
 import { AuthProvider, useAuth } from './src/store/authStore';
@@ -17,6 +18,7 @@ import SettlementScreen from './src/screens/Settlement';
 import StoreScreen from './src/screens/Store';
 import ProductFormScreen from './src/screens/ProductForm';
 import OrderDetailScreen from './src/screens/OrderDetail';
+import QrScanScreen from './src/screens/QrScan';
 import ReviewsScreen from './src/screens/Reviews';
 import NoticeListScreen from './src/screens/NoticeList';
 import NoticeDetailScreen from './src/screens/NoticeDetail';
@@ -25,6 +27,10 @@ import CouponStatusScreen from './src/screens/CouponStatus';
 import LoginScreen from './src/screens/Login';
 import SignUpScreen from './src/screens/SignUp';
 import OnboardingScreen from './src/screens/Onboarding';
+import SupportScreen from './src/screens/Support';
+import InquiryFormScreen from './src/screens/InquiryForm';
+import InquiryListScreen from './src/screens/InquiryList';
+import InquiryDetailScreen from './src/screens/InquiryDetail';
 
 import {
   Home,
@@ -38,6 +44,9 @@ import {
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
+
+// 푸시 알림(배너) 탭 시 컴포넌트 트리 밖(App 컴포넌트)에서 화면을 이동시키기 위한 참조.
+const navigationRef = createNavigationContainerRef();
 
 function TabBarIcon({ Icon, color, size, badgeCount }) {
   return (
@@ -152,11 +161,17 @@ function RootNavigator() {
       <Stack.Screen name="MainTabs" component={MainTabs} />
       <Stack.Screen name="ProductForm" component={ProductFormScreen} />
       <Stack.Screen name="OrderDetail" component={OrderDetailScreen} />
+      {/* QR 픽업 스캔 — 카메라 전체화면(탭바 가림) */}
+      <Stack.Screen name="QrScan" component={QrScanScreen} options={{ presentation: 'fullScreenModal' }} />
       <Stack.Screen name="Reviews" component={ReviewsScreen} />
       <Stack.Screen name="NoticeList" component={NoticeListScreen} />
       <Stack.Screen name="NoticeDetail" component={NoticeDetailScreen} />
       <Stack.Screen name="CouponRequest" component={CouponRequestScreen} />
       <Stack.Screen name="CouponStatus" component={CouponStatusScreen} />
+      <Stack.Screen name="Support" component={SupportScreen} />
+      <Stack.Screen name="InquiryForm" component={InquiryFormScreen} />
+      <Stack.Screen name="InquiryList" component={InquiryListScreen} />
+      <Stack.Screen name="InquiryDetail" component={InquiryDetailScreen} />
     </Stack.Navigator>
   );
 }
@@ -225,12 +240,37 @@ function Gate() {
   return <RootNavigator />;
 }
 
+// 푸시 알림(배너) 탭 시 해당 화면으로 딥링크. data.reference_type 은 report_logs 트리거가
+// notifications.reference_type 그대로 실어 보낸다(src/lib/push.js 참고).
+function handleNotificationDeepLink(data) {
+  if (!data || !navigationRef.isReady()) return;
+  if (data.reference_type === 'report' && data.reference_id) {
+    navigationRef.navigate('InquiryDetail', { reportId: data.reference_id });
+  }
+}
+
+function usePushNotificationNavigation() {
+  useEffect(() => {
+    // 앱이 완전 종료 상태였다가 알림 탭으로 실행된 경우(cold start)
+    Notifications.getLastNotificationResponseAsync().then(response => {
+      const data = response?.notification?.request?.content?.data;
+      if (data) handleNotificationDeepLink(data);
+    });
+    // 앱이 백그라운드/포그라운드 상태에서 알림을 탭한 경우
+    const sub = Notifications.addNotificationResponseReceivedListener(response => {
+      handleNotificationDeepLink(response.notification.request.content.data);
+    });
+    return () => sub.remove();
+  }, []);
+}
+
 export default function App() {
+  usePushNotificationNavigation();
   return (
     <SafeAreaProvider>
       <AuthProvider>
         <AppProvider>
-          <NavigationContainer>
+          <NavigationContainer ref={navigationRef}>
             <StatusBar style="auto" />
             <Gate />
           </NavigationContainer>

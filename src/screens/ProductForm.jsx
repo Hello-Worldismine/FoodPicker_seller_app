@@ -10,6 +10,7 @@ import {
   Modal,
   Image,
   Alert,
+  ActivityIndicator,
   Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -48,12 +49,8 @@ const INTERVAL_PRESETS = [
   { label: '2시간', minutes: 120 },
   { label: '3시간', minutes: 180 },
 ];
-const PICKUP_DEADLINE_OPTIONS = [
-  { label: '30분',    minutes: 30 },
-  { label: '1시간',   minutes: 60 },
-  { label: '1시간 반', minutes: 90 },
-  { label: '2시간',   minutes: 120 },
-];
+// Date.getDay() 인덱스(0=일) → stores.open_hours 의 요일 키
+const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function formatDate(date) {
   if (!date) return '';
@@ -70,10 +67,39 @@ function formatTime(date) {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+// 소비기한 기본값용 — 내일 날짜
+function tomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d;
+}
+
 function parseTimeToDate(timeStr) {
   const [h, m] = timeStr.split(':').map(Number);
   const d = new Date();
   d.setHours(h, m, 0, 0);
+  return d;
+}
+
+// 오늘의 매장 영업 종료 시각('HH:MM')을 구한다.
+// storeInfo.openHours 구조: { allSame, sameOpen, sameClose, days: { mon: { open, close, isOpen }, ... } }
+//   · allSame 이면 요일 구분 없이 sameClose
+//   · 아니면 days[오늘 요일].close (그 요일이 영업일일 때만)
+//   · 오늘이 휴무이거나 값이 없으면 21:00
+function resolveTodayCloseTime(openHours) {
+  if (openHours?.allSame && openHours?.sameClose) return openHours.sameClose;
+  const today = openHours?.days?.[WEEKDAY_KEYS[new Date().getDay()]];
+  if (today?.isOpen && today?.close) return today.close;
+  return '21:00';
+}
+
+// 픽업 마감 기본값 = '오늘 영업 종료 시각'. 이미 지났으면 '내일 같은 시각'.
+// (등록 직후 마감이 지난 상품 → 서버 expire_products() 가 곧바로 판매중지하는 것을 막는다)
+function defaultDeadlineDate(openHours) {
+  const [h, m] = resolveTodayCloseTime(openHours).split(':').map(Number);
+  const d = new Date();
+  d.setHours(Number.isFinite(h) ? h : 21, Number.isFinite(m) ? m : 0, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
   return d;
 }
 
@@ -117,7 +143,7 @@ export default function ProductFormScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const insets = useSafeAreaInsets();
-  const { products, addProduct, updateProduct } = useApp();
+  const { products, addProduct, updateProduct, storeInfo } = useApp();
 
   const { productId } = route.params || {};
   const editProduct = productId ? products.find(p => p.id === productId) : null;
@@ -132,17 +158,29 @@ export default function ProductFormScreen() {
   const [reductionAmount, setReductionAmount] = useState(editProduct?.reductionAmount?.toString() || '');
   const [intervalMinutes, setIntervalMinutes] = useState(editProduct?.intervalMinutes || 30);
   const [stock, setStock] = useState(editProduct?.stock?.toString() || '');
+  // 소비기한 기본값 = '내일 23:59'.
+  // 서버 cron(expire_products)이 5분마다 `expiry_date < now()` 인 상품을 판매중지로 바꾸므로
+  // 기본값이 '오늘 23:59' 였을 때 등록 당일 자정에 전 상품이 사용자앱에서 사라졌다.
   const [expiryDate, setExpiryDate] = useState(
-    editProduct?.expiryDate ? formatDate(editProduct.expiryDate) : formatDate(new Date())
+    editProduct?.expiryDate ? formatDate(editProduct.expiryDate) : formatDate(tomorrow())
   );
   const [expiryTime, setExpiryTime] = useState(
     editProduct?.expiryDate ? formatTime(editProduct.expiryDate) : '23:59'
   );
   const [storage, setStorage] = useState(editProduct?.storage?.replace(' 보관', '') || '냉장');
   const [storageDetail, setStorageDetail] = useState(editProduct?.storageDetail || '');
-  const [pickupDeadlineMinutes, setPickupDeadlineMinutes] = useState(
-    editProduct?.pickupDeadlineMinutes || 60
+  // 픽업 마감 = '마감 시각'(절대, products.pickup_deadline_at). 구 '주문 후 N분' 방식 폐기.
+  //   · 수정 모드: 기존 마감 시각
+  //   · 신규 등록: 오늘 매장 영업 종료 시각(지났으면 내일 같은 시각)
+  // 최초 렌더에서 한 번만 계산한다(매장 정보가 늦게 로드돼 입력값을 덮어쓰지 않도록).
+  const initialDeadline = useMemo(
+    () => (editProduct?.pickupDeadlineAt
+      ? new Date(editProduct.pickupDeadlineAt)
+      : defaultDeadlineDate(storeInfo?.openHours)),
+    [], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const [pickupDeadlineDate, setPickupDeadlineDate] = useState(formatDate(initialDeadline));
+  const [pickupDeadlineTime, setPickupDeadlineTime] = useState(formatTime(initialDeadline));
   const [description, setDescription] = useState(editProduct?.description || '');
   const [composition, setComposition] = useState(editProduct?.composition || '');
   const [allergens, setAllergens] = useState(editProduct?.allergens || []);
@@ -158,6 +196,7 @@ export default function ProductFormScreen() {
 
   const [showIntervalDropdown, setShowIntervalDropdown] = useState(false);
   const [intervalDropdownPos, setIntervalDropdownPos] = useState({ top: 0 });
+  const [submitting, setSubmitting] = useState(false);
 
   // 가격 유효성 검사
   const startPriceError = !!(startPrice && originalPrice &&
@@ -203,6 +242,8 @@ export default function ProductFormScreen() {
     let currentVal = new Date();
     if (target === 'expiryDate') currentVal = parseDateStr(expiryDate);
     if (target === 'expiryTime') currentVal = parseTimeToDate(expiryTime);
+    if (target === 'deadlineDate') currentVal = parseDateStr(pickupDeadlineDate);
+    if (target === 'deadlineTime') currentVal = parseTimeToDate(pickupDeadlineTime);
     setPickerValue(currentVal);
     setPickerTarget(target);
     setPickerMode(mode);
@@ -214,6 +255,8 @@ export default function ProductFormScreen() {
     if (!date) return;
     if (pickerTarget === 'expiryDate') setExpiryDate(formatDate(date));
     if (pickerTarget === 'expiryTime') setExpiryTime(formatTime(date));
+    if (pickerTarget === 'deadlineDate') setPickupDeadlineDate(formatDate(date));
+    if (pickerTarget === 'deadlineTime') setPickupDeadlineTime(formatTime(date));
   }
 
   async function pickImage() {
@@ -231,6 +274,9 @@ export default function ProductFormScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
+      // iOS 기본값(Automatic)은 HEIC 원본을 넘겨 업로드 후 렌더가 되지 않는다 → JPEG 표현 요청.
+      preferredAssetRepresentationMode:
+        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
     if (!result.canceled && result.assets?.[0]) {
       setImages(prev => [...prev, result.assets[0].uri].slice(0, 10));
@@ -266,7 +312,7 @@ export default function ProductFormScreen() {
 
   // 등록/수정: addProduct/updateProduct → api(insertProduct/updateProductData) → Supabase.
   // 이미지는 api 계층의 uploadImages가 로컬 URI를 Storage에 업로드 후 public URL로 치환한다.
-  function validateAndSubmit() {
+  async function validateAndSubmit() {
     if (!name.trim()) { Alert.alert('오류', '상품명을 입력해주세요.'); return; }
     if (!category) { Alert.alert('오류', '카테고리를 선택해주세요.'); return; }
     if (!originalPrice || isNaN(parseInt(originalPrice))) { Alert.alert('오류', '정상가를 입력해주세요.'); return; }
@@ -277,9 +323,34 @@ export default function ProductFormScreen() {
     if (reductionError) { Alert.alert('오류', '회당 인하 금액은 (시작가 - 하한가)를 초과할 수 없습니다.'); return; }
     if (!stock || isNaN(parseInt(stock))) { Alert.alert('오류', '판매 수량을 입력해주세요.'); return; }
 
+    if (!images.length) { Alert.alert('오류', '상품 사진을 1장 이상 등록해주세요.'); return; }
+
     const [ey, em, ed] = expiryDate.split('-').map(Number);
     const [eth, etm] = expiryTime.split(':').map(Number);
     const expDate = new Date(ey, em - 1, ed, eth, etm, 0);
+
+    // 소비기한이 이미 지났으면 서버 cron(expire_products)이 5분 안에 판매중지로 바꿔
+    // 사용자앱에서 사라진다 → 등록 단계에서 차단한다.
+    if (expDate.getTime() <= Date.now()) {
+      Alert.alert('소비기한 확인', '소비기한이 현재 시각보다 이후여야 합니다.\n소비기한이 지난 상품은 자동으로 판매중지 처리됩니다.');
+      return;
+    }
+
+    const [dy, dm, dd] = pickupDeadlineDate.split('-').map(Number);
+    const [dth, dtm] = pickupDeadlineTime.split(':').map(Number);
+    const deadlineDate = new Date(dy, dm - 1, dd, dth, dtm, 0);
+
+    // 마감이 지난 상품은 주문 자체가 거부되고(create_order: 'pickup deadline passed')
+    // expire_products() 가 pause_reason='pickup_closed' 로 판매중지시킨다 → 여기서 차단.
+    if (deadlineDate.getTime() <= Date.now()) {
+      Alert.alert('픽업 마감 확인', '픽업 마감은 현재 시각 이후여야 합니다.');
+      return;
+    }
+    // DB 제약(products_pickup_deadline_at_chk)과 동일 — 소비기한 이후 픽업은 불가.
+    if (deadlineDate.getTime() > expDate.getTime()) {
+      Alert.alert('픽업 마감 확인', '픽업 마감은 소비기한을 넘을 수 없습니다.');
+      return;
+    }
 
     // 프리셋 목록 외 '기타 알레르기 직접 입력' 값도 병합(중복 제외).
     const extraAllergen = otherAllergen.trim();
@@ -305,7 +376,7 @@ export default function ProductFormScreen() {
       expiryDate: expDate.toISOString(),
       storage,
       storageDetail: storageDetail.trim(),
-      pickupDeadlineMinutes,
+      pickupDeadlineAt: deadlineDate.toISOString(),
       description: description.trim(),
       composition: composition.trim(),
       allergens: mergedAllergens,
@@ -314,12 +385,19 @@ export default function ProductFormScreen() {
       cancelPolicy: cancelPolicy.trim(),
     };
 
-    if (isEdit) {
-      updateProduct(productId, productData);
-      Alert.alert('완료', '상품이 수정되었습니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
-    } else {
-      addProduct(productData);
-      Alert.alert('등록 완료', '상품이 등록되어 즉시 판매가 시작됩니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
+    setSubmitting(true);
+    try {
+      if (isEdit) {
+        await updateProduct(productId, productData);
+        Alert.alert('완료', '상품이 수정되었습니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
+      } else {
+        await addProduct(productData);
+        Alert.alert('등록 완료', '상품이 등록되어 즉시 판매가 시작됩니다.', [{ text: '확인', onPress: () => navigation.goBack() }]);
+      }
+    } catch (e) {
+      Alert.alert('오류', e.message || '상품 저장 중 오류가 발생했습니다.');
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -637,29 +715,30 @@ export default function ProductFormScreen() {
             />
           </View>
 
-          {/* 주문 후 픽업 마감 */}
+          {/* 픽업 마감 시각 */}
           <View style={card}>
-            <Text style={cardTitle}>주문 후 픽업 마감 <Text style={{ color: '#E5484D' }}>*</Text></Text>
-            <Text style={[fieldLabel, { marginBottom: 12 }]}>주문 후 몇 분 이내로 방문해야 하나요?</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {PICKUP_DEADLINE_OPTIONS.map(({ label, minutes }) => (
-                <TouchableOpacity
-                  key={minutes}
-                  activeOpacity={1}
-                  onPress={() => setPickupDeadlineMinutes(minutes)}
-                  style={{
-                    flex: 1, alignItems: 'center', justifyContent: 'center',
-                    paddingVertical: 12, borderRadius: 10, borderWidth: 1,
-                    backgroundColor: pickupDeadlineMinutes === minutes ? '#22A06B' : '#fff',
-                    borderColor: pickupDeadlineMinutes === minutes ? '#22A06B' : '#E5E7EB',
-                  }}
-                >
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: pickupDeadlineMinutes === minutes ? '#fff' : '#6B7280' }}>
-                    {label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+            <Text style={cardTitle}>픽업 마감 <Text style={{ color: '#E5484D' }}>*</Text></Text>
+            <Text style={[fieldLabel, { marginBottom: 12 }]}>이 시각까지 고객이 매장에 방문해야 합니다.</Text>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                onPress={() => openPicker('deadlineDate', 'date')}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
+              >
+                <Text style={{ fontSize: 15, color: '#1F2933' }}>{pickupDeadlineDate}</Text>
+                <Calendar color="#9AA3AF" size={15} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => openPicker('deadlineTime', 'time')}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F5F6F7', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12 }}
+              >
+                <Text style={{ fontSize: 15, color: '#1F2933' }}>{pickupDeadlineTime}</Text>
+                <Clock color="#9AA3AF" size={15} />
+              </TouchableOpacity>
             </View>
+            <Text style={{ fontSize: 12, color: '#9AA3AF', marginTop: 10, lineHeight: 18 }}>
+              기본값은 오늘 매장 영업 종료 시각입니다. 소비기한 이후로는 설정할 수 없으며,
+              마감 30분 전 고객에게 알림이 발송됩니다.
+            </Text>
           </View>
 
           {/* 상품 설명 */}
@@ -764,11 +843,13 @@ export default function ProductFormScreen() {
         <View style={{ backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingHorizontal: 16, paddingTop: 12, paddingBottom: insets.bottom + 12 }}>
           <TouchableOpacity
             activeOpacity={0.85}
-            style={{ backgroundColor: '#22A06B', borderRadius: 14, paddingVertical: 16, alignItems: 'center' }}
+            disabled={submitting}
+            style={{ backgroundColor: submitting ? '#A7D9C4' : '#22A06B', borderRadius: 14, paddingVertical: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
             onPress={validateAndSubmit}
           >
+            {submitting && <ActivityIndicator color="#fff" size="small" />}
             <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>
-              {isEdit ? '수정 완료' : '상품 등록하기'}
+              {submitting ? '저장 중…' : isEdit ? '수정 완료' : '상품 등록하기'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -835,6 +916,8 @@ export default function ProductFormScreen() {
                   value={pickerValue}
                   mode={pickerMode}
                   display="spinner"
+                  // 소비기한·픽업 마감은 과거 날짜를 고를 수 없게 한다(등록 직후 자동 판매중지 방지)
+                  minimumDate={pickerMode === 'date' ? new Date() : undefined}
                   onChange={(e, d) => { if (d) { setPickerValue(d); handlePickerChange(e, d); } }}
                   locale="ko-KR"
                 />
@@ -846,6 +929,7 @@ export default function ProductFormScreen() {
             value={pickerValue}
             mode={pickerMode}
             display="default"
+            minimumDate={pickerMode === 'date' ? new Date() : undefined}
             onChange={(e, d) => { handlePickerChange(e, d); }}
           />
         )

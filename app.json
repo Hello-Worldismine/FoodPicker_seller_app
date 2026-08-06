@@ -11,6 +11,9 @@
     "splash": { "resizeMode": "contain", "backgroundColor": "#22A06B" },
     "ios": { "supportsTablet": false, "bundleIdentifier": "com.foodpicker.seller" },
     "android": { "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#22A06B" }, "package": "com.foodpicker.seller" },
-    "plugins": ["expo-image-picker"]
+    "plugins": [
+      "expo-image-picker",
+      ["expo-camera", { "cameraPermission": "주문 QR 코드를 스캔하기 위해 카메라 접근이 필요합니다.", "recordAudioAndroid": false }]
+    ]
   }
 }
