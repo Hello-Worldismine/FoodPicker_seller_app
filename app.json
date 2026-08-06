@@ -11,7 +11,7 @@
     "splash": { "resizeMode": "contain", "backgroundColor": "#22A06B" },
     "ios": { "supportsTablet": false, "bundleIdentifier": "com.foodpicker.seller" },
     "android": {
-      "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#22A06B" },
+      "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#FDE17A" },
       "package": "com.foodpicker.seller",
       "googleServicesFile": "./google-services.json",
       "permissions": [
