@@ -47,6 +47,7 @@ import {
   MessageSquare,
   Heart,
   Ticket,
+  KeyRound,
 } from 'lucide-react-native';
 
 const APPROVAL_CONFIG = {
@@ -1230,6 +1231,16 @@ export default function StoreScreen() {
             <View className="flex-row items-center gap-3">
               <Bell color="#9AA3AF" size={18} />
               <Text className="text-charcoal text-[16px]">알림 설정</Text>
+            </View>
+            <ChevronRight color="#9AA3AF" size={18} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            className="flex-row items-center justify-between px-4 py-3.5 border-b border-gray-50"
+            onPress={() => navigation.navigate('ChangePassword')}
+          >
+            <View className="flex-row items-center gap-3">
+              <KeyRound color="#9AA3AF" size={18} />
+              <Text className="text-charcoal text-[16px]">비밀번호 변경</Text>
             </View>
             <ChevronRight color="#9AA3AF" size={18} />
           </TouchableOpacity>

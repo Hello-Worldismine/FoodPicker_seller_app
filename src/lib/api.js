@@ -623,3 +623,33 @@ export async function provisionMyStore() {
   if (error) throw error;
   return mapStore(data);
 }
+
+// ───────── 아이디(이메일) 찾기 ─────────
+// find_email_by_seller RPC(20260807000000_find_email.sql) 예외 상수 → 한국어 문구.
+// 서버는 PII 노출을 막기 위해 '일치하는 계정 없음'을 예외가 아니라 null 로 반환한다.
+const LOOKUP_ERROR_MESSAGES = {
+  LOOKUP_RATE_LIMIT: '조회 시도가 너무 많습니다. 1시간 후 다시 시도해주세요.',
+  INVALID_INPUT: '입력한 정보를 다시 확인해주세요.',
+  PHONE_INVALID: '휴대폰 번호 형식을 확인해주세요.',
+};
+
+/**
+ * 판매자 아이디(가입 이메일) 찾기.
+ * 대표자명 + (매장 전화 | 사업자등록번호) 가 일치하면 마스킹된 이메일(ab****@gmail.com),
+ * 일치하는 계정이 없으면 null 을 돌려준다. 로그인 전에 호출하는 anon RPC 다.
+ * @param {string} ownerName 대표자명
+ * @param {{ phone?: string, bizNumber?: string }} keys 둘 중 최소 하나
+ * @returns {Promise<string|null>} 마스킹 이메일 또는 null
+ */
+export async function findMySellerEmail(ownerName, { phone = null, bizNumber = null } = {}) {
+  const { data, error } = await supabase.rpc('find_email_by_seller', {
+    p_owner_name: (ownerName ?? '').trim(),
+    p_phone: phone ? String(phone).trim() : null,
+    p_biz_number: bizNumber ? String(bizNumber).trim() : null,
+  });
+  if (error) {
+    const key = Object.keys(LOOKUP_ERROR_MESSAGES).find(k => (error.message || '').includes(k));
+    throw new Error(key ? LOOKUP_ERROR_MESSAGES[key] : (error.message || '조회 중 오류가 발생했습니다.'));
+  }
+  return data ?? null;
+}

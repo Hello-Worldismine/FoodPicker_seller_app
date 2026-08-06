@@ -26,6 +26,9 @@ import CouponRequestScreen from './src/screens/CouponRequest';
 import CouponStatusScreen from './src/screens/CouponStatus';
 import LoginScreen from './src/screens/Login';
 import SignUpScreen from './src/screens/SignUp';
+import FindIdScreen from './src/screens/FindId';
+import FindPasswordScreen from './src/screens/FindPassword';
+import ChangePasswordScreen from './src/screens/ChangePassword';
 import OnboardingScreen from './src/screens/Onboarding';
 import SupportScreen from './src/screens/Support';
 import InquiryFormScreen from './src/screens/InquiryForm';
@@ -172,6 +175,7 @@ function RootNavigator() {
       <Stack.Screen name="InquiryForm" component={InquiryFormScreen} />
       <Stack.Screen name="InquiryList" component={InquiryListScreen} />
       <Stack.Screen name="InquiryDetail" component={InquiryDetailScreen} />
+      <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
     </Stack.Navigator>
   );
 }
@@ -181,6 +185,8 @@ function AuthNavigator() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Login" component={LoginScreen} />
       <Stack.Screen name="SignUp" component={SignUpScreen} />
+      <Stack.Screen name="FindId" component={FindIdScreen} />
+      <Stack.Screen name="FindPassword" component={FindPasswordScreen} />
     </Stack.Navigator>
   );
 }
@@ -222,7 +228,7 @@ function PendingApprovalScreen() {
 
 // 세션 유무에 따라 인증 화면 / 앱 본체를 분기
 function Gate() {
-  const { session, loading: authLoading } = useAuth();
+  const { session, loading: authLoading, recovering } = useAuth();
   const { loading: dataLoading, storeInfo } = useApp();
 
   // 알림 탭으로 앱을 켠 경우(cold start) RootNavigator 는 세션·매장 로드·승인상태가
@@ -238,6 +244,11 @@ function Gate() {
     </View>
   );
   if (authLoading) return splash;
+  // ★ 비밀번호 재설정 중(복구 세션 획득 ~ 새 비밀번호 저장 전)에는 무조건 인증 화면을 유지한다.
+  //   verifyOtp 가 성공하는 순간 세션이 생기므로, 이 가드가 없으면 바로 아래 !session 검사를
+  //   통과해 dataLoading 스플래시 → 심사중/앱 본체로 넘어가고 FindPassword 화면이 언마운트되어
+  //   비밀번호를 바꿀 수 없게 된다(authStore 의 recovering 주석 참고).
+  if (recovering) return <AuthNavigator />;
   if (!session) return <AuthNavigator />;
   // 로그인됐지만 매장 데이터 로딩 중이면 스플래시 유지(화면들의 null 접근 방지)
   if (dataLoading) return splash;

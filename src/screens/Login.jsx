@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
+import { mapAuthError } from '../lib/auth';
 
 export default function LoginScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -30,14 +31,8 @@ export default function LoginScreen({ navigation }) {
       password,
     });
     setLoading(false);
-    if (error) {
-      const msg = error.message.includes('Email not confirmed')
-        ? '이메일 인증이 완료되지 않았습니다. 메일함을 확인해주세요.'
-        : error.message.includes('Invalid login credentials')
-        ? '이메일 또는 비밀번호가 올바르지 않습니다.'
-        : error.message;
-      Alert.alert('로그인 실패', msg);
-    }
+    // 에러 문구 매핑은 src/lib/auth.js 의 mapAuthError 로 일원화(재설정 화면과 문구를 맞춘다)
+    if (error) Alert.alert('로그인 실패', mapAuthError(error.message));
     // 성공 시 AuthProvider의 onAuthStateChange가 세션을 갱신 → 게이트가 앱으로 전환
   }
 
@@ -71,7 +66,9 @@ export default function LoginScreen({ navigation }) {
           <Text style={{ fontSize: 14, color: '#9AA3AF', marginTop: 6 }}>판매자 센터에 로그인하세요</Text>
         </View>
 
-        <Text style={{ fontSize: 13, color: '#6B7280', marginBottom: 6, fontWeight: '600' }}>이메일</Text>
+        <Text style={{ fontSize: 13, color: '#6B7280', marginBottom: 6, fontWeight: '600' }}>
+          이메일 <Text style={{ color: '#9AA3AF', fontWeight: '400' }}>(아이디는 가입하신 이메일 주소입니다)</Text>
+        </Text>
         <TextInput
           style={[input, { marginBottom: 14 }]}
           placeholder="email@example.com"
@@ -108,7 +105,18 @@ export default function LoginScreen({ navigation }) {
           )}
         </TouchableOpacity>
 
-        <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 20, gap: 6 }}>
+        {/* 아이디(=가입 이메일) 찾기 · 비밀번호 찾기 */}
+        <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 18, gap: 12 }}>
+          <TouchableOpacity onPress={() => navigation.navigate('FindId')} style={{ paddingVertical: 4 }}>
+            <Text style={{ color: '#6B7280', fontSize: 14 }}>아이디 찾기</Text>
+          </TouchableOpacity>
+          <Text style={{ color: '#E5E7EB', fontSize: 14 }}>|</Text>
+          <TouchableOpacity onPress={() => navigation.navigate('FindPassword')} style={{ paddingVertical: 4 }}>
+            <Text style={{ color: '#6B7280', fontSize: 14 }}>비밀번호 찾기</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 14, gap: 6 }}>
           <Text style={{ color: '#9AA3AF', fontSize: 14 }}>아직 판매자 계정이 없으신가요?</Text>
           <TouchableOpacity onPress={() => navigation.navigate('SignUp')}>
             <Text style={{ color: '#22A06B', fontSize: 14, fontWeight: '700' }}>회원가입</Text>

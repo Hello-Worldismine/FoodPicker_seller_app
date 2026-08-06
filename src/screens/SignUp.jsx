@@ -42,6 +42,17 @@ export default function SignUpScreen({ navigation }) {
       Alert.alert('입력 확인', '매장명을 입력해주세요.');
       return;
     }
+    // ★ 대표자명·매장 전화는 '아이디 찾기'의 본인확인 인자다(find_email_by_seller RPC).
+    //   예전에는 빈 값도 통과해서 stores.owner_name='' 인 매장이 만들어졌고, 그 계정은
+    //   영원히 아이디 찾기가 불가능했다. 그래서 여기서 필수로 막는다.
+    if (!ownerName.trim()) {
+      Alert.alert('입력 확인', '대표자명을 입력해주세요.\n아이디(이메일) 찾기 시 본인 확인에 사용됩니다.');
+      return;
+    }
+    if (phone.replace(/[^0-9]/g, '').length < 9) {
+      Alert.alert('입력 확인', '매장 전화번호를 정확히 입력해주세요.\n아이디(이메일) 찾기 시 본인 확인에 사용됩니다.');
+      return;
+    }
 
     setLoading(true);
     // options.data → raw_user_meta_data. 판매자 승격(app_metadata.role) 후 매장 자동 생성 시 사용됨.
@@ -120,10 +131,13 @@ export default function SignUpScreen({ navigation }) {
           <Text style={{ fontSize: 15, fontWeight: '700', color: '#1F2933', marginTop: 10, marginBottom: 14 }}>매장 정보</Text>
           <Text style={label}>매장명 <Text style={{ color: '#E5484D' }}>*</Text></Text>
           <TextInput style={input} placeholder="예: 그린샐러드 강남점" placeholderTextColor="#C4C9D0" value={storeName} onChangeText={setStoreName} />
-          <Text style={label}>대표자명</Text>
+          <Text style={label}>대표자명 <Text style={{ color: '#E5484D' }}>*</Text></Text>
           <TextInput style={input} placeholder="대표자 성명" placeholderTextColor="#C4C9D0" value={ownerName} onChangeText={setOwnerName} />
-          <Text style={label}>매장 전화</Text>
+          <Text style={label}>매장 전화 <Text style={{ color: '#E5484D' }}>*</Text></Text>
           <TextInput style={input} placeholder="02-1234-5678" placeholderTextColor="#C4C9D0" keyboardType="phone-pad" value={phone} onChangeText={t => setPhone(formatPhone(t))} maxLength={13} />
+          <Text style={{ fontSize: 12, color: '#9AA3AF', lineHeight: 18, marginTop: -6, marginBottom: 14 }}>
+            대표자명과 매장 전화는 아이디(이메일)를 잊으셨을 때 본인 확인에 사용됩니다.
+          </Text>
 
           <View style={{ backgroundColor: '#FFF4ED', borderRadius: 12, padding: 14, marginBottom: 20 }}>
             <Text style={{ fontSize: 12, color: '#B45309', lineHeight: 18 }}>
