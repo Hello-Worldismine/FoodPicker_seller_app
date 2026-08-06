@@ -30,6 +30,7 @@ const NOTIF_TYPE_COLOR = {
   coupon_approved: { color: '#22A06B', bg: '#E9F8F1' },
   coupon_rejected: { color: '#E5484D', bg: '#FFF0F0' },
   coupon_assigned: { color: '#FF8A3D', bg: '#FFF4ED' }, // 관리자 매장 지정 쿠폰 발급 요청
+  inquiry_reply:   { color: '#22A06B', bg: '#E9F8F1' }, // 20260806 마이그레이션(백엔드 적용 필요) 이후 생성
 };
 
 export default function HomeScreen() {
@@ -421,7 +422,14 @@ export default function HomeScreen() {
                   <TouchableOpacity
                     key={notif.id}
                     activeOpacity={0.85}
-                    onPress={() => markNotificationRead(notif.id)}
+                    onPress={() => {
+                      markNotificationRead(notif.id);
+                      // 문의 답변 알림 탭 → 문의 상세로 이동(20260806 마이그레이션 적용 후 reference_type='report')
+                      if (notif.referenceType === 'report' && notif.referenceId) {
+                        setShowNotifModal(false);
+                        navigation.navigate('InquiryDetail', { reportId: notif.referenceId });
+                      }
+                    }}
                     style={{
                       flexDirection: 'row', alignItems: 'flex-start', gap: 12,
                       paddingHorizontal: 16, paddingVertical: 14,

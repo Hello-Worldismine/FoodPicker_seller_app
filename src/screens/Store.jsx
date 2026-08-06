@@ -877,7 +877,6 @@ export default function StoreScreen() {
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
-  const [showCustomerCenter, setShowCustomerCenter] = useState(false);
   const [bizUploading, setBizUploading] = useState(false);
   const [bizCertPending, setBizCertPending] = useState(null); // 선택했지만 아직 업로드 전인 로컬 URI
   const [showBizCertViewer, setShowBizCertViewer] = useState(false);
@@ -1236,7 +1235,7 @@ export default function StoreScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             className="flex-row items-center justify-between px-4 py-3.5"
-            onPress={() => setShowCustomerCenter(true)}
+            onPress={() => navigation.navigate('Support')}
           >
             <View className="flex-row items-center gap-3">
               <HelpCircle color="#9AA3AF" size={18} />
@@ -1332,35 +1331,6 @@ export default function StoreScreen() {
         </View>
       </Modal>
 
-      {/* 고객센터 */}
-      <Modal visible={showCustomerCenter} transparent animationType="fade" onRequestClose={() => setShowCustomerCenter(false)}>
-        <View className="flex-1 bg-black/50 items-center justify-center px-6">
-          <View className="bg-white rounded-2xl p-6 w-full">
-            <Text className="text-lg font-bold text-charcoal mb-1 text-center">고객센터</Text>
-            <Text className="text-gray-500 text-xs text-center mb-5">평일 09:00 ~ 18:00 (주말·공휴일 휴무)</Text>
-            <TouchableOpacity
-              className="flex-row items-center justify-center gap-2 bg-mint rounded-xl py-3.5 mb-2.5"
-              onPress={() => Linking.openURL('tel:0212345678')}
-            >
-              <Phone color="#22A06B" size={16} />
-              <Text className="text-primary font-semibold text-[15px]">전화 문의 · 02-1234-5678</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              className="flex-row items-center justify-center gap-2 bg-softgray rounded-xl py-3.5 mb-4"
-              onPress={() => Linking.openURL('mailto:help@foodpicker.co.kr')}
-            >
-              <MessageSquare color="#374151" size={16} />
-              <Text className="text-gray-700 font-semibold text-[15px]">이메일 문의</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              className="border border-gray-200 rounded-xl py-3 items-center"
-              onPress={() => setShowCustomerCenter(false)}
-            >
-              <Text className="text-gray-600 font-semibold">닫기</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* 사업자등록증 전체화면 보기 */}
       <Modal

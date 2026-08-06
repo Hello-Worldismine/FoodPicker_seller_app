@@ -163,6 +163,8 @@ export function mapNotification(r) {
     message: r.message,
     read: r.is_read,
     createdAt: r.created_at,
+    referenceType: r.reference_type ?? null,
+    referenceId: r.reference_id ?? null,
   };
 }
 
@@ -294,6 +296,49 @@ export async function fetchNotifications() {
   const { data, error } = await supabase.from('notifications').select('*').order('created_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapNotification);
+}
+
+// ── 1:1 문의(고객센터) — 관리자 웹 신고/문의관리(reports)와 연동 ──────────────────
+// create_report RPC(20260722020000 마이그레이션)가 p_inquirer='seller' 로 호출 시
+// 본인 매장 보유 여부를 서버에서 검증 후 inquirer_type='seller' 로 접수한다.
+export async function createSellerInquiry(type, title, content) {
+  const { data, error } = await supabase.rpc('create_report', {
+    p_type: type, p_title: title, p_content: content, p_inquirer: 'seller',
+  });
+  if (error) throw error;
+  return { id: data.id, receiptCode: data.receipt_code };
+}
+
+// 내 문의 내역 — my_reports 뷰(reporter_id=본인 행만 RLS 로 노출, 구매자/판매자 공용).
+export async function fetchMyInquiries() {
+  const { data, error } = await supabase
+    .from('my_reports').select('*').order('received_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(r => ({
+    id: r.id,
+    receiptCode: r.receipt_code,
+    type: r.type,
+    title: r.title,
+    content: r.content,
+    status: r.status,
+    orderCode: r.order_code ?? null,
+    receivedAt: r.received_at,
+  }));
+}
+
+// 문의 답변 이력 — report_logs 중 kind='reply' 만(RLS: 본인 문의 건 한정).
+// 관리자 웹이 붙이는 "답변 등록: " 접두어는 노출용으로 제거한다.
+export async function fetchInquiryReplies(reportId) {
+  const { data, error } = await supabase
+    .from('report_logs').select('id, message, created_at')
+    .eq('report_id', reportId).eq('kind', 'reply')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(r => ({
+    id: r.id,
+    message: (r.message || '').replace(/^답변 등록:\s*/, ''),
+    createdAt: r.created_at,
+  }));
 }
 export async function fetchNotices() {
   // target: 관리자 웹이 공지 대상(all/buyer/seller)을 지정 — 판매자 앱은 전체·판매자 대상만 노출.
