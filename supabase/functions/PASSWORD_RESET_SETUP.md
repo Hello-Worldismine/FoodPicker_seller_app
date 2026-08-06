@@ -20,6 +20,61 @@ FoodPicker 의 비밀번호 재설정은 **메일로 6자리 숫자 코드를 �
 
 ---
 
+## ✅ 현재 적용 상태 (2026-08-06 확인)
+
+아래 항목은 **이미 적용을 마쳤습니다.** 다시 하실 필요가 없고, 이 문서의 나머지는
+값이 바뀌었을 때 참고하시라고 남겨둔 것입니다.
+
+| 항목 | 위치 | 적용된 값 |
+|---|---|---|
+| 커스텀 SMTP | Authentication → Emails → SMTP Settings | **ON** |
+| 발신 주소 / 이름 | 〃 | `foodpicker77@gmail.com` / `FoodPicker` |
+| SMTP 호스트 / 포트 | 〃 | `smtp.gmail.com` / `465` |
+| SMTP 사용자 / 비밀번호 | 〃 | `foodpicker77@gmail.com` / 등록 완료(Gmail 앱 비밀번호) |
+| 재설정 메일 제목 | Authentication → Emails → Templates → Reset password | `[푸드피커] 비밀번호 재설정 인증코드` |
+| 재설정 메일 본문 | 〃 | 한국어 + `{{ .Token }}`, `{{ .ConfirmationURL }}` **제거 완료** |
+| 인증코드 길이 | Authentication → Sign In / Providers → Email | **6자리** (기존 8자리 → 앱과 불일치라 교정) |
+| 인증코드 만료 | 〃 | `3600`초 (1시간) |
+| 최소 비밀번호 길이 | 〃 | `6`자 (앱 검증과 동일) |
+
+> ⚠️ **인증코드 길이는 반드시 6이어야 합니다.**
+> 앱의 입력칸이 6자리로 고정돼 있어(`OTP_LENGTH = 6`) 콘솔 값이 8이면 사용자가 8자리 코드를
+> 다 입력할 수 없어 **인증이 100% 실패합니다.** 실제로 8로 설정돼 있던 것을 6으로 바꿨습니다.
+> 이 값을 다시 바꾸실 때는 앱의 `src/lib/auth.js` 의 `OTP_LENGTH` 도 함께 바꿔야 합니다.
+
+### Gmail SMTP 로 운영할 때 알아둘 점
+
+Supabase 콘솔이 SMTP 화면에서 이런 경고를 띄웁니다 — 잘못된 설정이라는 뜻은 아닙니다.
+
+> "It looks like the SMTP provider you entered is designed for sending personal
+> rather than transactional email messages. Email deliverability may be impacted."
+
+Gmail 은 원래 개인용 메일 서비스라 **대량 발송에 최적화돼 있지 않습니다.** 실제 제약은 이렇습니다.
+
+- **일일 발송 한도**가 있습니다(무료 Gmail 기준 대략 500통/일). 사용자가 늘면 한도에 걸려
+  그날 이후 재설정 메일이 **조용히 발송되지 않습니다.**
+- 네이버·다음 등 국내 메일에서 **스팸함으로 분류될 확률이 상대적으로 높습니다.**
+  자체 도메인(예: `no-reply@foodpicker.app`) + SPF/DKIM 을 쓰는 전용 발송 서비스보다 불리합니다.
+- 발신 주소를 Gmail 계정과 다르게 지정하면 Gmail 이 다시 써버립니다. 지금처럼
+  발신 주소와 SMTP 사용자를 같게(`foodpicker77@gmail.com`) 두어야 합니다.
+
+**지금 단계(개발·시연·초기 운영)에서는 이대로 충분합니다.** 정식 오픈 후 사용자가 늘면
+아래 ①의 Resend/SendGrid 같은 전용 발송 서비스로 옮기시길 권합니다. 옮길 때 바꿀 것은
+SMTP 4개 값(호스트·포트·사용자·비밀번호)뿐이고 앱 코드는 그대로입니다.
+
+### 🔐 Gmail 앱 비밀번호 관리
+
+앱 비밀번호는 **Gmail 계정 비밀번호와 별개로 발급되는 16자리 값**이고, 유출되면 그 계정으로
+메일을 보낼 수 있습니다. 다음 두 가지만 지켜주세요.
+
+- 앱 비밀번호를 **메신저·메일·문서에 남기지 마세요.** 이미 어딘가에 공유하셨다면
+  [Google 계정 → 보안 → 앱 비밀번호](https://myaccount.google.com/apppasswords)에서
+  **기존 값을 삭제하고 새로 발급**한 뒤, 위 SMTP 설정의 비밀번호만 교체하시면 됩니다.
+- 앱 비밀번호는 **2단계 인증이 켜져 있어야** 발급됩니다. 2단계 인증을 끄면 기존 앱 비밀번호도
+  함께 무효화되어 메일 발송이 멈춥니다.
+
+---
+
 ## ⓞ 이 설정이 없으면 어떻게 되나요
 
 | 안 한 설정 | 실제 증상 |
