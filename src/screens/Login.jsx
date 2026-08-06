@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
@@ -64,9 +65,11 @@ export default function LoginScreen({ navigation }) {
       >
         {/* 브랜드 */}
         <View style={{ alignItems: 'center', marginBottom: 36 }}>
-          <View style={{ width: 72, height: 72, borderRadius: 20, backgroundColor: '#22A06B', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
-            <Text style={{ fontSize: 36 }}>🥗</Text>
-          </View>
+          <Image
+            source={require('../../assets/seller_greeting.png')}
+            style={{ width: 100, height: 100, marginBottom: 16 }}
+            resizeMode="contain"
+          />
           <Text style={{ fontSize: 24, fontWeight: '800', color: '#1F2933' }}>FoodPicker 판매자</Text>
           <Text style={{ fontSize: 14, color: '#9AA3AF', marginTop: 6 }}>판매자 센터에 로그인하세요</Text>
         </View>
