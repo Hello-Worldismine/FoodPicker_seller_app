@@ -224,6 +224,14 @@ function PendingApprovalScreen() {
 function Gate() {
   const { session, loading: authLoading } = useAuth();
   const { loading: dataLoading, storeInfo } = useApp();
+
+  // 알림 탭으로 앱을 켠 경우(cold start) RootNavigator 는 세션·매장 로드·승인상태가
+  // 전부 확정된 뒤에야 마운트된다. NavigationContainer 의 onReady 만으로는
+  // 그 시점을 못 잡으므로, Gate 분기가 바뀔 때마다 보류 중인 딥링크를 재시도한다.
+  useEffect(() => {
+    flushPendingDeepLink();
+  }, [authLoading, session, dataLoading, storeInfo?.approvalStatus]);
+
   const splash = (
     <View style={{ flex: 1, backgroundColor: '#22A06B', alignItems: 'center', justifyContent: 'center' }}>
       <ActivityIndicator color="#fff" size="large" />
@@ -242,24 +250,68 @@ function Gate() {
 
 // 푸시 알림(배너) 탭 시 해당 화면으로 딥링크. data.reference_type 은 report_logs 트리거가
 // notifications.reference_type 그대로 실어 보낸다(src/lib/push.js 참고).
-function handleNotificationDeepLink(data) {
-  if (!data || !navigationRef.isReady()) return;
+//
+// [주의] 예전에는 navigationRef.isReady() 가 false 면 payload 를 그냥 버렸는데,
+//        판매자앱 Gate 는 세션 + 매장 로드 + 승인상태가 확정될 때까지 RootNavigator 를
+//        렌더하지 않으므로 "알림을 탭해 앱을 켜는" 흐름에서 딥링크가 거의 항상 유실됐다.
+//        이제는 payload 를 보관해 두고 실제로 이동 가능해졌을 때 한 번만 flush 한다.
+const pendingDeepLinkRef = { current: null };
+// 콜드스타트 응답(getLastNotificationResponseAsync)과 리스너가 같은 알림을 중복 전달할 수
+// 있어, 알림 식별자로 한 번만 처리한다.
+const handledResponseIds = new Set();
+
+// 알림 payload → 이동할 라우트. 대상이 없으면 null.
+function toDeepLinkTarget(data) {
+  if (!data) return null;
   if (data.reference_type === 'report' && data.reference_id) {
-    navigationRef.navigate('InquiryDetail', { reportId: data.reference_id });
+    return { name: 'InquiryDetail', params: { reportId: data.reference_id } };
   }
+  return null;
+}
+
+// 지금 실제로 이동 가능한가 — RootNavigator 가 붙어야 InquiryDetail 라우트가 존재한다.
+// (로그인 전 AuthNavigator·스플래시·온보딩·심사중 화면에서는 false → payload 를 계속 보관)
+function canNavigateTo(routeName) {
+  if (!navigationRef.isReady()) return false;
+  const routeNames = navigationRef.getRootState()?.routeNames;
+  return Array.isArray(routeNames) && routeNames.includes(routeName);
+}
+
+// 보류 중인 딥링크를 이동 가능해졌을 때 소비한다. 소비 즉시 ref 를 비워 중복 navigate 를 막는다.
+function flushPendingDeepLink() {
+  const target = pendingDeepLinkRef.current;
+  if (!target) return;
+  if (!canNavigateTo(target.name)) return;
+  pendingDeepLinkRef.current = null;
+  navigationRef.navigate(target.name, target.params);
+}
+
+function handleNotificationDeepLink(data) {
+  const target = toDeepLinkTarget(data);
+  if (!target) return;
+  pendingDeepLinkRef.current = target;
+  flushPendingDeepLink(); // 이미 이동 가능하면 즉시, 아니면 보관했다가 나중에
+}
+
+function handleNotificationResponse(response) {
+  const request = response?.notification?.request;
+  if (!request) return;
+  const id = request.identifier;
+  if (id) {
+    if (handledResponseIds.has(id)) return;
+    handledResponseIds.add(id);
+  }
+  handleNotificationDeepLink(request.content?.data);
 }
 
 function usePushNotificationNavigation() {
   useEffect(() => {
     // 앱이 완전 종료 상태였다가 알림 탭으로 실행된 경우(cold start)
-    Notifications.getLastNotificationResponseAsync().then(response => {
-      const data = response?.notification?.request?.content?.data;
-      if (data) handleNotificationDeepLink(data);
-    });
+    Notifications.getLastNotificationResponseAsync()
+      .then(handleNotificationResponse)
+      .catch(e => console.warn('[push] 마지막 알림 응답 조회 실패:', e?.message));
     // 앱이 백그라운드/포그라운드 상태에서 알림을 탭한 경우
-    const sub = Notifications.addNotificationResponseReceivedListener(response => {
-      handleNotificationDeepLink(response.notification.request.content.data);
-    });
+    const sub = Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
     return () => sub.remove();
   }, []);
 }
@@ -270,7 +322,11 @@ export default function App() {
     <SafeAreaProvider>
       <AuthProvider>
         <AppProvider>
-          <NavigationContainer ref={navigationRef}>
+          <NavigationContainer
+            ref={navigationRef}
+            onReady={flushPendingDeepLink}
+            onStateChange={flushPendingDeepLink}
+          >
             <StatusBar style="auto" />
             <Gate />
           </NavigationContainer>

@@ -10,10 +10,28 @@
     "newArchEnabled": false,
     "splash": { "resizeMode": "contain", "backgroundColor": "#22A06B" },
     "ios": { "supportsTablet": false, "bundleIdentifier": "com.foodpicker.seller" },
-    "android": { "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#22A06B" }, "package": "com.foodpicker.seller" },
+    "android": {
+      "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#22A06B" },
+      "package": "com.foodpicker.seller",
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
     "plugins": [
       "expo-image-picker",
-      ["expo-camera", { "cameraPermission": "주문 QR 코드를 스캔하기 위해 카메라 접근이 필요합니다.", "recordAudioAndroid": false }]
-    ]
+      ["expo-camera", { "cameraPermission": "주문 QR 코드를 스캔하기 위해 카메라 접근이 필요합니다.", "recordAudioAndroid": false }],
+      ["expo-notifications", { "color": "#22A06B" }]
+    ],
+    "owner": "dongsik-kim",
+    "extra": {
+      "eas": {
+        "projectId": "f5bc481e-0670-4586-a44e-4175136c3f02"
+      }
+    }
   }
 }
