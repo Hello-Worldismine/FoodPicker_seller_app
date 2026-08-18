@@ -157,3 +157,16 @@
 - **generate_weekly_settlements()**(security definer) + pg_cron `foodpicker-weekly-settlements`('0 0 * * 3'): 전주(월~일 KST) 완료주문을 미생성분만 settlements 생성(수수료 8:2). 
 - 앱측 동반: appStore 실시간 구독, Home 알림 삭제 버튼, authStore PKCE(?code=) 딥링크 처리.
 - ⚠️ **사용자 조치**: 이 마이그레이션도 SQL Editor에서 실행해야 함(20260708과 함께).
+
+## 후속 마이그레이션 20260818_settlement_completion (2026-08-18)
+
+관리자 웹 '정산 관리'에서 화면만 있고 서버 경로가 없던 기능을 채운 정산 전용 보완. **적용 완료(운영 DB 반영됨).**
+
+- **admin_set_settlement_status(ids[], status, memo, settled_on)**: 4번째 인자 `p_settled_on`(정산예정일=실지급일) 추가. 기존 3인자 시그니처는 drop 후 재생성(오버로드 모호성 방지 — 호출자는 관리자 웹뿐). 처리 시 **판매자에게 `notifications.type='settlement'` 알림을 판매자 단위로 1건씩 발송**한다. init 에서 enum 에 'settlement' 을 만들어 두고도 정산 알림을 생성하는 코드가 플랫폼 어디에도 없어(시드 1행만 존재) 판매자가 확정/보류를 앱에서 알 방법이 없던 문제.
+- **admin_set_settlement_memo(ids[], memo)**: 상태 변경·알림 없이 `admin_memo` 만 갱신. 메모 수정이 잘못된 상태 알림을 유발하지 않게 경로 분리.
+- **generate_settlements_range(start, end, pay)**: 기간 지정 정산 생성 공통 로직(멱등 — 정산행이 이미 있는 주문은 skip). 회계식은 20260715(쿠폰 부담) 승계.
+- **generate_weekly_settlements()**: 함수명/ cron 잡(`foodpicker-weekly-settlements`, '0 0 * * 3') 유지한 채 내부만 교체 — **`platform_settings.settlement_cycle`(weekly/biweekly/monthly)을 읽어 마감 기간을 결정**하고 range 에 위임한다. 마감할 주기가 아니면 0 반환. 설정 화면의 '정산 주기' 셀렉트가 배치에 전혀 반영되지 않던 문제.
+- **admin_generate_settlements(start, end, pay?)**: 관리자 수동 마감(cron 누락 복구·임시 마감). 기간 최대 94일, 감사 로그 기록.
+- **default_commission_rate()** + `stores.commission_rate` DEFAULT 연결: `platform_settings.default_commission_rate` 가 어디에서도 읽히지 않아 신규 매장이 항상 하드코딩 10% 로 생성되던 문제. platform_settings 는 관리자 전용 RLS 라 security definer 로 감싸고 authenticated/anon 에 execute 부여.
+- **admin_set_store_commission(store_id, rate)**: 매장별 수수료율 변경(감사 로그 + 판매자 알림). init 의 컬럼 잠금으로 판매자는 수정 불가인데 관리자용 경로도 없었다. **소급 없음** — 주문 생성 시점의 `stores.commission_rate` 로 `orders.fee` 가 확정되므로 기존 주문·정산은 불변.
+- `flag_store_reapproval` 트리거는 commission_rate 를 감시 대상에 넣지 않으므로 수수료율 변경이 매장 재승인을 유발하지 않는다(확인함).
