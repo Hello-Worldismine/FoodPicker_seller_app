@@ -428,6 +428,10 @@ export default function HomeScreen() {
                       if (notif.referenceType === 'report' && notif.referenceId) {
                         setShowNotifModal(false);
                         navigation.navigate('InquiryDetail', { reportId: notif.referenceId });
+                      } else if (notif.referenceType === 'settlement') {
+                        // 정산 확정/보류/수수료율 변경 알림 → 정산 탭(그룹 단위 통지라 reference_id 는 없다)
+                        setShowNotifModal(false);
+                        navigation.navigate('Settlement');
                       }
                     }}
                     style={{

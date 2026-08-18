@@ -148,10 +148,17 @@ export function mapSettlement(r) {
     platformFee: r.platform_fee,
     pgFee: r.pg_fee,
     refund: r.refund,
-    couponBurden: r.coupon_burden || 0,   // 쿠폰 할인 판매자 부담액
+    couponBurden: r.coupon_burden || 0,   // 쿠폰 할인 판매자 부담액(결제금액에서 이미 빠진 몫 — 표시용)
     settlement: r.settlement_amount,
     status: r.status,
     date: r.settled_on,
+    // 정산 주기 구간. 관리자가 정산예정일(settled_on)을 미래로 지정하면 settled_on 기준 주간
+    // 필터에서 사라지므로, 조회는 이 구간을 우선 사용한다.
+    periodStart: r.period_start ?? null,
+    periodEnd: r.period_end ?? null,
+    // 관리자 보류 사유/메모. 관리자 웹이 판매자에게 통지하는 용도로 쓰는 컬럼인데
+    // 그동안 매핑되지 않아 화면에 전혀 뜨지 않았다.
+    adminMemo: r.admin_memo ?? null,
   };
 }
 

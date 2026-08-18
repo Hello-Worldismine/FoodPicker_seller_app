@@ -277,6 +277,10 @@ function toDeepLinkTarget(data) {
   if (data.reference_type === 'report' && data.reference_id) {
     return { name: 'InquiryDetail', params: { reportId: data.reference_id } };
   }
+  // 정산 확정/보류/수수료율 변경 알림 → 정산 탭. reference_id 는 없다(그룹 단위 통지).
+  if (data.reference_type === 'settlement') {
+    return { name: 'MainTabs', params: { screen: 'Settlement' } };
+  }
   return null;
 }
 

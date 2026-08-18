@@ -47,7 +47,7 @@ function formatWeekLabel(weeksAgo) {
   return `${fmt(mon)}~${fmt(sun)}`;
 }
 
-// 다음 수요일 정산일 계산
+// 다음 수요일(주간 정산 기본 주기) — 예정된 정산이 하나도 없을 때의 안내용 폴백
 function getNextWednesday() {
   const now = new Date();
   const day = now.getDay(); // 0=일,3=수
@@ -57,10 +57,25 @@ function getNextWednesday() {
   return wed;
 }
 
-// 정산일 3일 전인지 확인
-function isWithin3DaysOfSettlement() {
-  const next = getNextWednesday();
-  const diff = (next - new Date()) / 86400000;
+/**
+ * 다음 정산일 — 하드코딩된 '다음 수요일'이 아니라 실제 정산 데이터에서 뽑는다.
+ * 본사에서 정산 주기(주간/격주/월간)를 바꾸거나 정산예정일을 개별 지정하면 수요일이 아닐 수 있고,
+ * 판매자 앱은 platform_settings 를 읽을 권한이 없어 주기를 알 수 없다.
+ * → 미지급(정산예정/보류) 정산 중 가장 이른 정산예정일을 쓰고, 없으면 다음 수요일로 폴백한다.
+ */
+function getNextSettlementDate(settlements) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const upcoming = (settlements || [])
+    .filter(s => s.status !== 'completed' && s.date)
+    .map(s => new Date(s.date))
+    .filter(d => !isNaN(d) && d >= today)
+    .sort((a, b) => a - b);
+  return { date: upcoming[0] || getNextWednesday(), fromData: upcoming.length > 0 };
+}
+
+// 정산일 3일 전인지 확인(계좌 변경 잠금)
+function isWithin3DaysOf(nextDate) {
+  const diff = (nextDate - new Date()) / 86400000;
   return diff <= 3;
 }
 
@@ -89,25 +104,32 @@ export default function SettlementScreen() {
   const [showInfo, setShowInfo] = useState(false);
 
   const selectedStatusLabel = STATUS_FILTERS.find(f => f.key === statusFilter)?.label || '전체';
-  const nextWed = getNextWednesday();
-  const accountLocked = isWithin3DaysOfSettlement();
+  const { date: nextPayout, fromData: payoutFromData } = getNextSettlementDate(settlements);
+  const accountLocked = isWithin3DaysOf(nextPayout);
 
   // 필터링 기간 계산
   function getPeriodBounds() {
     if (period === 'this_week') return getWeekBounds(0);
     if (period === 'last_week') return getWeekBounds(1);
     if (period === 'custom' && customWeeksAgo != null) return getWeekBounds(customWeeksAgo);
-    return [null, null];
+    return [null, null];   // 'all'
   }
 
   const [periodStart, periodEnd] = getPeriodBounds();
 
   const filtered = settlements.filter(s => {
-    const d = new Date(s.date);
-    if (periodStart && d < periodStart) return false;
-    if (periodEnd && d > periodEnd) return false;
     if (statusFilter !== 'all' && s.status !== statusFilter) return false;
-    return true;
+    if (!periodStart || !periodEnd) return true;
+    // 정산 주기 구간이 있으면 그 구간과 겹치는지로 판단한다. settled_on(정산예정일) 기준으로만
+    // 걸러내면 본사가 정산예정일을 미래로 지정한 정산이 어느 주에도 안 잡혀 아예 조회되지 않았다.
+    if (s.periodStart && s.periodEnd) {
+      const ps = new Date(s.periodStart); const pe = new Date(s.periodEnd);
+      pe.setHours(23, 59, 59, 999);
+      return pe >= periodStart && ps <= periodEnd;
+    }
+    const d = new Date(s.date);
+    if (isNaN(d)) return true;   // 날짜 정보가 없으면 숨기지 않는다
+    return d >= periodStart && d <= periodEnd;
   });
 
   const totalSales   = filtered.reduce((s, x) => s + x.amount, 0);
@@ -146,11 +168,13 @@ export default function SettlementScreen() {
             <Info color="#9AA3AF" size={20} />
           </TouchableOpacity>
         </View>
-        {/* 매주 수요일 지급 안내 */}
+        {/* 다음 정산일 안내 — 실제 정산 데이터의 정산예정일에서 뽑는다(본사가 주기·지급일을 조정할 수 있음) */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, backgroundColor: '#E9F8F1', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
           <Calendar color="#22A06B" size={13} />
-          <Text style={{ fontSize: 12, color: '#22A06B', fontWeight: '600' }}>매주 수요일 지급</Text>
-          <Text style={{ fontSize: 12, color: '#22A06B' }}>· 다음 정산일: {formatDate(nextWed)}</Text>
+          <Text style={{ fontSize: 12, color: '#22A06B', fontWeight: '600' }}>다음 정산일</Text>
+          <Text style={{ fontSize: 12, color: '#22A06B' }}>
+            {formatDate(nextPayout)}{payoutFromData ? '' : ' (예정)'}
+          </Text>
         </View>
       </View>
 
@@ -287,6 +311,11 @@ export default function SettlementScreen() {
               const style = getStatusStyle(item.status);
               const pFee = item.platformFee || 0;
               const gFee = item.pgFee || 0;
+              const burden = item.couponBurden || 0;
+              // 정산 조정액 — 본사 쿠폰 보전분/환불 회계 잔차. 이 값을 함께 보여야
+              // '판매금액 - 수수료 - 환불 + 조정 = 정산금액' 이 항상 맞아떨어진다.
+              // (쿠폰 판매자 부담액은 결제금액에서 이미 빠져 있어 다시 빼면 이중 차감이 된다.)
+              const adjust = item.settlement - (item.amount - pFee - gFee - (item.refund || 0));
               return (
                 <View key={item.id} style={{ backgroundColor: '#fff', borderRadius: 14, marginBottom: 12, padding: 16, elevation: 1 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -317,10 +346,12 @@ export default function SettlementScreen() {
                         <Text style={{ fontSize: 13, color: '#E5484D' }}>-{formatPrice(item.refund)}</Text>
                       </View>
                     )}
-                    {item.couponBurden > 0 && (
+                    {adjust !== 0 && (
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: 13, color: '#6B7280' }}>쿠폰 할인 부담액</Text>
-                        <Text style={{ fontSize: 13, color: '#E5484D' }}>-{formatPrice(item.couponBurden)}</Text>
+                        <Text style={{ fontSize: 13, color: '#6B7280' }}>정산 조정</Text>
+                        <Text style={{ fontSize: 13, color: adjust > 0 ? '#22A06B' : '#E5484D' }}>
+                          {adjust > 0 ? '+' : '-'}{formatPrice(Math.abs(adjust))}
+                        </Text>
                       </View>
                     )}
                     <View style={{ height: 1, backgroundColor: '#F3F4F6', marginVertical: 2 }} />
@@ -328,7 +359,23 @@ export default function SettlementScreen() {
                       <Text style={{ fontSize: 14, fontWeight: '700', color: '#374151' }}>정산금액</Text>
                       <Text style={{ fontSize: 14, fontWeight: '700', color: '#22A06B' }}>{formatPrice(item.settlement)}</Text>
                     </View>
+                    {burden > 0 && (
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 }}>
+                        <Text style={{ fontSize: 11, color: '#9CA3AF' }}>└ 쿠폰 할인 판매자 부담(참고)</Text>
+                        <Text style={{ fontSize: 11, color: '#9CA3AF' }}>{formatPrice(burden)}</Text>
+                      </View>
+                    )}
                   </View>
+
+                  {/* 관리자 보류 사유/메모 — 본사가 판매자에게 통지하는 값. 그동안 화면에 뜨지 않았다. */}
+                  {!!item.adminMemo && (
+                    <View style={{ marginTop: 12, backgroundColor: '#FFF7E6', borderRadius: 10, padding: 10 }}>
+                      <Text style={{ fontSize: 11, color: '#B45309', fontWeight: '700', marginBottom: 2 }}>
+                        {item.status === 'on_hold' ? '보류 사유' : '본사 메모'}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: '#92400E', lineHeight: 18 }}>{item.adminMemo}</Text>
+                    </View>
+                  )}
                 </View>
               );
             })
@@ -381,7 +428,7 @@ export default function SettlementScreen() {
               </TouchableOpacity>
             </View>
             <Text style={{ fontSize: 12, color: '#9AA3AF', paddingHorizontal: 16, paddingVertical: 10 }}>
-              정산은 매주 수요일에 지급됩니다. 조회할 주를 선택하세요.
+              조회할 기간을 선택하세요. 정산예정일은 본사 정산 주기에 따라 달라질 수 있습니다.
             </Text>
             {weekOptions.map(opt => {
               const selected = period === 'custom' && customWeeksAgo === opt.weeksAgo;
@@ -418,8 +465,8 @@ export default function SettlementScreen() {
               <View style={{ flexDirection: 'row', gap: 10 }}>
                 <Text style={{ color: '#22A06B', fontWeight: '700', fontSize: 14 }}>📅</Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#1F2933', marginBottom: 2 }}>매주 수요일 지급</Text>
-                  <Text style={{ fontSize: 13, color: '#6B7280', lineHeight: 20 }}>전주 월~일 판매금액에서 수수료를 차감한 금액이 매주 수요일 정산됩니다.</Text>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#1F2933', marginBottom: 2 }}>정산 주기</Text>
+                  <Text style={{ fontSize: 13, color: '#6B7280', lineHeight: 20 }}>정산 구간의 판매금액에서 수수료를 차감한 금액이 지급됩니다. 정산 주기(주간·격주·월간)와 지급일은 본사 정책에 따라 달라질 수 있으며, 확정된 정산예정일은 각 정산 내역에 표시됩니다.</Text>
                 </View>
               </View>
               <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -433,7 +480,7 @@ export default function SettlementScreen() {
                 <Text style={{ fontSize: 14 }}>⚠️</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 14, fontWeight: '700', color: '#E5484D', marginBottom: 2 }}>계좌 변경 제한</Text>
-                  <Text style={{ fontSize: 13, color: '#6B7280', lineHeight: 20 }}>정산일(수요일) 기준 3일 전부터는 정산 계좌를 변경할 수 없습니다.</Text>
+                  <Text style={{ fontSize: 13, color: '#6B7280', lineHeight: 20 }}>정산일 기준 3일 전부터는 정산 계좌를 변경할 수 없습니다.</Text>
                 </View>
               </View>
             </View>
