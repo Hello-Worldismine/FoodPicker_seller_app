@@ -157,3 +157,35 @@
 - **generate_weekly_settlements()**(security definer) + pg_cron `foodpicker-weekly-settlements`('0 0 * * 3'): 전주(월~일 KST) 완료주문을 미생성분만 settlements 생성(수수료 8:2). 
 - 앱측 동반: appStore 실시간 구독, Home 알림 삭제 버튼, authStore PKCE(?code=) 딥링크 처리.
 - ⚠️ **사용자 조치**: 이 마이그레이션도 SQL Editor에서 실행해야 함(20260708과 함께).
+
+## 후속 마이그레이션 20260818_settlement_completion (2026-08-18)
+
+관리자 웹 '정산 관리'에서 화면만 있고 서버 경로가 없던 기능을 채운 정산 전용 보완. **적용 완료(운영 DB 반영됨).**
+
+- **admin_set_settlement_status(ids[], status, memo, settled_on)**: 4번째 인자 `p_settled_on`(정산예정일=실지급일) 추가. 기존 3인자 시그니처는 drop 후 재생성(오버로드 모호성 방지 — 호출자는 관리자 웹뿐). 처리 시 **판매자에게 `notifications.type='settlement'` 알림을 판매자 단위로 1건씩 발송**한다. init 에서 enum 에 'settlement' 을 만들어 두고도 정산 알림을 생성하는 코드가 플랫폼 어디에도 없어(시드 1행만 존재) 판매자가 확정/보류를 앱에서 알 방법이 없던 문제.
+- **admin_set_settlement_memo(ids[], memo)**: 상태 변경·알림 없이 `admin_memo` 만 갱신. 메모 수정이 잘못된 상태 알림을 유발하지 않게 경로 분리.
+- **generate_settlements_range(start, end, pay)**: 기간 지정 정산 생성 공통 로직(멱등 — 정산행이 이미 있는 주문은 skip). 회계식은 20260715(쿠폰 부담) 승계.
+- **generate_weekly_settlements()**: 함수명/ cron 잡(`foodpicker-weekly-settlements`, '0 0 * * 3') 유지한 채 내부만 교체 — **`platform_settings.settlement_cycle`(weekly/biweekly/monthly)을 읽어 마감 기간을 결정**하고 range 에 위임한다. 마감할 주기가 아니면 0 반환. 설정 화면의 '정산 주기' 셀렉트가 배치에 전혀 반영되지 않던 문제.
+- **admin_generate_settlements(start, end, pay?)**: 관리자 수동 마감(cron 누락 복구·임시 마감). 기간 최대 94일, 감사 로그 기록.
+- **default_commission_rate()** + `stores.commission_rate` DEFAULT 연결: `platform_settings.default_commission_rate` 가 어디에서도 읽히지 않아 신규 매장이 항상 하드코딩 10% 로 생성되던 문제. platform_settings 는 관리자 전용 RLS 라 security definer 로 감싸고 authenticated/anon 에 execute 부여.
+- **admin_set_store_commission(store_id, rate)**: 매장별 수수료율 변경(감사 로그 + 판매자 알림). init 의 컬럼 잠금으로 판매자는 수정 불가인데 관리자용 경로도 없었다. **소급 없음** — 주문 생성 시점의 `stores.commission_rate` 로 `orders.fee` 가 확정되므로 기존 주문·정산은 불변.
+- `flag_store_reapproval` 트리거는 commission_rate 를 감시 대상에 넣지 않으므로 수수료율 변경이 매장 재승인을 유발하지 않는다(확인함).
+
+## 후속 마이그레이션 20260818010000_settlement_hardening (2026-08-18)
+
+정산 전 영역 다각도 감사에서 확인된 결함 수정. **적용 완료(운영 DB 반영·검증됨).**
+
+- **[SECURITY·CRITICAL] 배치 함수 권한 회수**: `generate_settlements_range` / `generate_weekly_settlements` 가 `anon`·`authenticated` 에게 EXECUTE 노출돼 있었다. 둘 다 security definer 인데 `is_admin()` 검사가 없어 **공개 anon 키만으로 정산 행 생성이 가능**했다. 원인은 `revoke all ... from public` 만 한 것 — Supabase 는 public 스키마 함수에 `alter default privileges` 로 anon/authenticated 에 EXECUTE 를 따로 부여하므로 PUBLIC 회수로는 지워지지 않는다. **새 함수를 만들 때는 반드시 `from public, anon, authenticated` 로 역할을 명시해 revoke 할 것**(`log_admin_action` 이 이 패턴을 이미 쓰고 있었다). 추가로 `current_setting('request.jwt.claims', true) is not null and not is_admin()` 가드를 함수 안에 넣어, 권한이 어떤 이유로 되돌아가도 PostgREST 경유 호출은 막히게 했다(pg_cron 내부 호출에는 claims 가 없어 영향 없음).
+- **admin_refund_order 정산 차감 교정**: `status='scheduled'` 행만 차감해서 (a) 보류(on_hold) 정산은 환불이 반영되지 않아 과지급이 나고 (b) 순매출(amount−fee)만 빼서 쿠폰 본사 보전분이 정산액에 남았다. → `_apply_order_full_refund`(20260731)와 동일하게 `status <> 'completed'` 행을 `fee/platform_fee/pg_fee/settlement_amount = 0` 으로 정리. 이미 `completed`(지급 완료)인 행은 금액을 건드리지 않고 `admin_memo` 에 회수 필요를 남기고 감사 로그에 건수를 기록한다.
+- **admin_set_settlement_status 에 `p_from_status` 가드**(5인자로 재생성): 관리자 웹은 판매자×기간 그룹 단위로 처리하는데 한 그룹에 상태가 섞이면 그룹의 모든 행 id 가 무필터로 넘어와 지급 완료 행의 `settled_on` 이 덮이고 중복 금액 알림이 나갔다. 지정 시 해당 상태 행만 갱신하고, 알림·감사 로그도 CTE `returning` 으로 **실제 바뀐 행** 기준으로 집계한다.
+- **격주 판정 교체**: ISO 주차 패리티(`extract(week) % 2`)는 53주차 연도(2026 포함)의 연말·연초에서 홀수 주가 연달아 나와 한 주를 통째로 건너뛴다. → 고정 에폭(2026-01-05 월) 기준 14일 주기.
+- **settlement_code 발번 절단 수정**: `lpad(x, 3, '0')` 은 3자리 초과 문자열을 **절단**한다(`lpad('1000',3,'0') = '100'`). 1000번째 정산에서 기존 `ST-100` 과 충돌해 unique 위반 → 정산 생성 배치가 영구 실패한다. → `fmt_seq_code()`(20260716)로 교체. ⚠️ **`notices.notice_code`(20260716000000_admin.sql:497) 에 동일한 lpad(...,3) 이 남아 있다 — 공지 1000건째에 같은 방식으로 터진다(정산 범위 밖이라 이번엔 손대지 않음).**
+- **admin_delete_settlements(ids[], reason)**: 잘못 생성된 정산 행 삭제(정정용). 멱등 가드가 `order_id` 기준이라 재생성으로도 교정할 수 없던 문제. `status <> 'completed'` 만 삭제(회계 기록 보존), 사유 필수, 감사 로그 기록. 삭제하면 해당 주문은 `admin_generate_settlements` 로 재생성 가능.
+
+### 판매자 앱 동반 수정(같은 커밋, 앱 릴리스는 별도)
+
+- `mapSettlement` 에 `admin_memo`/`period_start`/`period_end` 매핑 추가 — 관리자 보류 사유가 매핑조차 안 돼 판매자에게 전혀 안 보였다.
+- 정산 카드가 `coupon_burden` 을 결제금액에서 또 빼 금액식이 안 맞았다(결제금액에 이미 반영된 값 → 이중 차감). 참고 표시로 바꾸고 **정산 조정액**을 추가해 `판매금액 − 수수료 − 환불 + 조정 = 정산금액` 이 항상 맞아떨어지게 했다.
+- 주간 필터가 `settled_on` 기준이라, 관리자가 정산예정일을 미래로 지정하면 어느 주에도 안 잡혀 **조회 자체가 불가**했다 → 정산 구간(`period_start`/`period_end`) 우선 필터.
+- '매주 수요일 지급' 하드코딩 제거 — 판매자 앱은 `platform_settings` 를 읽을 권한이 없어 주기를 알 수 없으므로, 실제 정산 데이터의 가장 이른 미지급 `settled_on` 을 '다음 정산일'로 쓴다.
+- `type='settlement'` 알림 딥링크(인앱 알림·푸시 → 정산 탭) 추가.

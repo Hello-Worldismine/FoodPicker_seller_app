@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "304437042726",
+    "project_id": "food-picker-76e24",
+    "storage_bucket": "food-picker-76e24.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:304437042726:android:503eacac1c9b19273ad0e7",
+        "android_client_info": {
+          "package_name": "com.foodpicker.seller"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDeqUeeS0HEB547XDNcRLVaUmRXUpda6PU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:304437042726:android:0dddb33752cb907e3ad0e7",
+        "android_client_info": {
+          "package_name": "com.foodpicker.userapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDeqUeeS0HEB547XDNcRLVaUmRXUpda6PU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

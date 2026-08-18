@@ -148,10 +148,17 @@ export function mapSettlement(r) {
     platformFee: r.platform_fee,
     pgFee: r.pg_fee,
     refund: r.refund,
-    couponBurden: r.coupon_burden || 0,   // 쿠폰 할인 판매자 부담액
+    couponBurden: r.coupon_burden || 0,   // 쿠폰 할인 판매자 부담액(결제금액에서 이미 빠진 몫 — 표시용)
     settlement: r.settlement_amount,
     status: r.status,
     date: r.settled_on,
+    // 정산 주기 구간. 관리자가 정산예정일(settled_on)을 미래로 지정하면 settled_on 기준 주간
+    // 필터에서 사라지므로, 조회는 이 구간을 우선 사용한다.
+    periodStart: r.period_start ?? null,
+    periodEnd: r.period_end ?? null,
+    // 관리자 보류 사유/메모. 관리자 웹이 판매자에게 통지하는 용도로 쓰는 컬럼인데
+    // 그동안 매핑되지 않아 화면에 전혀 뜨지 않았다.
+    adminMemo: r.admin_memo ?? null,
   };
 }
 
@@ -274,10 +281,21 @@ export async function fetchProducts() {
   if (error) throw error;
   return (data || []).map(mapProduct);
 }
+// ★ seller_id 필터는 필수다. RLS 만 믿으면 안 된다.
+//   orders 에는 SELECT 정책이 두 개 걸려 있고 둘은 OR 로 합쳐진다.
+//     · orders_select     : seller_id = auth.uid()   (20260706000000_init.sql:445)
+//     · orders_buyer_read : buyer_id  = auth.uid()   (20260707000000_followups.sql:117)
+//   그래서 필터 없이 조회하면 '내가 구매자로 산 주문' 까지 주문관리에 섞여 들어온다.
+//   그 주문들은 orders_update(using seller_id = auth.uid()) 에 걸려 상태 변경이 0행이 되고,
+//   화면에는 '주문을 변경할 수 없습니다' 만 뜬다 — 판매자가 원인을 알 수 없는 형태로 실패한다.
+//   (판매자 계정으로 사용자앱에서 테스트 주문을 하면 바로 재현된다)
 export async function fetchOrders() {
+  const uid = await currentUid();
+  if (!uid) return [];
   const { data, error } = await supabase
     .from('orders')
     .select('*, products(thumbnail, emoji)')
+    .eq('seller_id', uid)
     .order('ordered_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapOrder);
@@ -611,4 +629,34 @@ export async function provisionMyStore() {
   const { data, error } = await supabase.rpc('provision_my_store');
   if (error) throw error;
   return mapStore(data);
+}
+
+// ───────── 아이디(이메일) 찾기 ─────────
+// find_email_by_seller RPC(20260807000000_find_email.sql) 예외 상수 → 한국어 문구.
+// 서버는 PII 노출을 막기 위해 '일치하는 계정 없음'을 예외가 아니라 null 로 반환한다.
+const LOOKUP_ERROR_MESSAGES = {
+  LOOKUP_RATE_LIMIT: '조회 시도가 너무 많습니다. 1시간 후 다시 시도해주세요.',
+  INVALID_INPUT: '입력한 정보를 다시 확인해주세요.',
+  PHONE_INVALID: '휴대폰 번호 형식을 확인해주세요.',
+};
+
+/**
+ * 판매자 아이디(가입 이메일) 찾기.
+ * 대표자명 + (매장 전화 | 사업자등록번호) 가 일치하면 마스킹된 이메일(ab****@gmail.com),
+ * 일치하는 계정이 없으면 null 을 돌려준다. 로그인 전에 호출하는 anon RPC 다.
+ * @param {string} ownerName 대표자명
+ * @param {{ phone?: string, bizNumber?: string }} keys 둘 중 최소 하나
+ * @returns {Promise<string|null>} 마스킹 이메일 또는 null
+ */
+export async function findMySellerEmail(ownerName, { phone = null, bizNumber = null } = {}) {
+  const { data, error } = await supabase.rpc('find_email_by_seller', {
+    p_owner_name: (ownerName ?? '').trim(),
+    p_phone: phone ? String(phone).trim() : null,
+    p_biz_number: bizNumber ? String(bizNumber).trim() : null,
+  });
+  if (error) {
+    const key = Object.keys(LOOKUP_ERROR_MESSAGES).find(k => (error.message || '').includes(k));
+    throw new Error(key ? LOOKUP_ERROR_MESSAGES[key] : (error.message || '조회 중 오류가 발생했습니다.'));
+  }
+  return data ?? null;
 }
