@@ -162,32 +162,40 @@ https://<ref>.supabase.co/auth/v1/callback
    - **이메일 주소**
    - ⚠️ 이메일은 반드시 포함해야 합니다. FoodPicker 는 이메일로 회원을 식별합니다.
 5. **로그인 오픈 API 서비스 환경** 에서 **환경 추가 → 모바일 웹** 을 선택하고,
-   - **서비스 URL**: `https://foodpicker.app` (실제 서비스 도메인이 없으면 임의의 https 주소도 됩니다)
+   - **서비스 URL**: `https://<ref>.supabase.co`
    - **네이버 로그인 Callback URL**: 아래 주소를 그대로 넣습니다.
 
 ```
-foodpicker://auth-callback
+https://<ref>.supabase.co/functions/v1/naver-callback
 ```
+
+   > 📌 **왜 앱 주소(`foodpicker://auth-callback`)가 아닌가?**
+   > 네이버는 Callback URL 로 **http(s) 주소만** 받는다 — 커스텀 스킴은 등록 자체가 거부된다.
+   > 그래서 네이버에는 https 중계 함수(`naver-callback`)를 등록하고, 그 함수가 받은
+   > code/state 를 `foodpicker://auth-callback` 으로 302 리다이렉트해 앱으로 돌려보낸다.
+   > 구글·카카오는 Supabase 의 https 콜백을 쓰므로 이 우회가 필요 없다.
 
 6. **등록하기** 를 누릅니다.
 7. 만들어진 앱의 **개요** 화면에서 **Client ID** 와 **Client Secret** 을 복사해 메모합니다.
 
-> ⚠️ 네이버 콘솔이 `foodpicker://auth-callback` 처럼 `http(s)` 가 아닌 주소를 거부하는 경우가 있습니다.
-> 거부되면 **네이버 고객센터/개발자포럼에 커스텀 스킴 콜백 등록을 문의**해야 하며,
-> 그때까지는 카카오·구글 로그인만 사용하고 네이버 버튼은 숨겨두는 것을 권장합니다.
 > (앱은 `EXPO_PUBLIC_NAVER_CLIENT_ID` 가 비어 있으면 "네이버 로그인이 아직 준비되지 않았습니다"
-> 라고 안내하므로, 값을 비워두면 안전하게 비활성 상태가 됩니다.)
+> 라고 안내하므로, 값을 비워두면 네이버 버튼만 안전하게 비활성 상태가 됩니다.)
 
-### ⑤-2 Edge Function 배포
+### ⑤-2 Edge Function 배포 (**2개** — `naver-login`, `naver-callback`)
 
 1. Supabase 대시보드 → 왼쪽 메뉴 **Edge Functions**.
 2. **Deploy a new function** → **Via Editor**.
 3. 함수 이름을 정확히 `naver-login` 으로 입력합니다.
+   (같은 절차로 `naver-callback` 도 배포합니다 — ⑤-1 에서 네이버에 등록한 https 콜백을 받아
+    앱 딥링크로 302 중계하는 함수입니다. 이 함수는 시크릿이 필요 없습니다.)
 4. 에디터의 기본 코드를 전부 지우고, 이 저장소의
    `supabase/functions/naver-login/index.ts` 내용을 **전체 복사해서 붙여넣기** 합니다.
 5. **중요** — 함수 설정에서 **"Verify JWT with legacy secret"** 옵션을 **끕니다(OFF)**.
    이 함수는 *로그인 전에* 호출되므로 사용자 토큰이 없습니다.
-   - CLI 로 배포한다면: `supabase functions deploy naver-login --no-verify-jwt`
+   - CLI 로 배포한다면:
+     `supabase functions deploy naver-login --no-verify-jwt`
+     `supabase functions deploy naver-callback --no-verify-jwt`
+     (`naver-callback` 은 네이버 서버/브라우저가 인증 없이 호출하므로 JWT 검증을 반드시 꺼야 한다)
 6. **Deploy** 를 누릅니다.
 
 ### ⑤-3 네이버 시크릿을 Supabase 에 등록
@@ -249,6 +257,8 @@ dev build 를 설치한 실제 기기/에뮬레이터에서 확인합니다.
 | 해당 소셜 계정은 다른 회원에 연결되어 있습니다 | 그 카카오/구글 계정이 이미 다른 FoodPicker 회원에 연결됨. 그 회원으로 로그인하거나 먼저 해제해야 합니다 |
 | 계정 연동 기능이 비활성화되어 있습니다 | Manual Linking 이 꺼져 있음 → ④ |
 | 네이버 로그인이 아직 준비되지 않았습니다 | `EXPO_PUBLIC_NAVER_CLIENT_ID` 미설정 → ⑤-4, 또는 Secrets 미등록 → ⑤-3 |
+| 네이버 콘솔이 Callback URL 을 거부한다 | 커스텀 스킴은 등록 불가 — https 중계 함수 주소를 넣어야 한다 → ⑤-1 5번 |
+| 네이버 인증 후 앱으로 안 돌아온다 | `naver-callback` 미배포 또는 JWT 검증이 켜져 있음 → ⑤-2 |
 | 이미 가입된 이메일입니다 | 같은 이메일의 회원이 이미 있음. 이메일로 로그인한 뒤 **연결된 계정 관리** 에서 연동하세요 |
 
 ---
