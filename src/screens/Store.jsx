@@ -1545,9 +1545,24 @@ function StorePreviewModal({ visible, onClose, storeInfo, products, navigation }
   const sellingProducts = (products || []).filter(p => p.status === 'selling');
 
   // 미리보기(소비자 화면 시뮬레이션)의 액션도 실제 매장 정보로 동작.
+  // 소비자앱과 동일하게 네이버지도로 연결한다(구글맵으로 열면 iOS 는 사파리를 탄다).
+  // 앱이 없으면 nmap:// 이 reject 되므로 네이버지도 웹으로 폴백한다.
   function openDirections() {
-    const q = storeInfo.address || storeInfo.name || '';
-    Linking.openURL('https://maps.google.com/?q=' + encodeURIComponent(q));
+    const name = encodeURIComponent(storeInfo.name || storeInfo.address || '목적지');
+    const lat = Number(storeInfo.lat), lng = Number(storeInfo.lng);
+    const urls = Number.isFinite(lat) && Number.isFinite(lng)
+      ? [`nmap://route/public?dlat=${lat}&dlng=${lng}&dname=${name}&appname=com.foodpicker.seller`,
+         `https://map.naver.com/p/directions/-/${lng},${lat},${name}/-/transit`]
+      : (() => {
+          const q = encodeURIComponent(storeInfo.address || storeInfo.name || '');
+          return q ? [`nmap://search?query=${q}&appname=com.foodpicker.seller`,
+                      `https://map.naver.com/p/search/${q}`] : [];
+        })();
+    (async () => {
+      for (const url of urls) {
+        try { await Linking.openURL(url); return; } catch {}
+      }
+    })();
   }
   function callStore() {
     const tel = (storeInfo.phone || '').replace(/[^0-9]/g, '');

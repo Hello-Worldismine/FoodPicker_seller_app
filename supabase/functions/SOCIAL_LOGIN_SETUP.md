@@ -215,6 +215,11 @@ EXPO_PUBLIC_NAVER_CLIENT_ID=여기에_네이버_Client_ID
 - ⚠️ **Client Secret 은 절대 `.env` 에 넣지 마세요.** (앱을 뜯으면 보입니다)
 - ⚠️ 기존 `EXPO_PUBLIC_NAVER_MAP_CLIENT_ID` (지도용) 와 **다른 값** 입니다. 섞이지 않게 주의하세요.
 - 값을 바꾼 뒤에는 캐시를 지우고 다시 실행해야 반영됩니다: `npx expo start -c`
+- ⚠️ **EAS 빌드(설치본)는 `.env` 를 읽지 않습니다.** `eas.json` 의 `build.<프로필>.env` 에 같은 줄을
+  development / preview / production **세 프로필 모두** 추가해야 설치본에 값이 들어갑니다.
+  (`.env` 만 채우면 로컬 `expo start` 에서만 되고, 설치한 앱에서는 계속
+  "네이버 로그인이 아직 준비되지 않았습니다" 가 뜹니다 — `EXPO_PUBLIC_NAVER_MAP_CLIENT_ID` 가
+  이미 그렇게 등록돼 있으니 같은 자리에 나란히 넣으면 됩니다.)
 
 ---
 

@@ -9,7 +9,13 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
     "splash": { "resizeMode": "contain", "backgroundColor": "#22A06B" },
-    "ios": { "supportsTablet": false, "bundleIdentifier": "com.foodpicker.seller" },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.foodpicker.seller",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["navermap", "nmap"]
+      }
+    },
     "android": {
       "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#FDE17A" },
       "package": "com.foodpicker.seller",
