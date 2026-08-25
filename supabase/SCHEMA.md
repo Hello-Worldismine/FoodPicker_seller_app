@@ -192,10 +192,22 @@
 
 ## 후속 마이그레이션 20260820000000_code_sequence_repair (2026-08-20)
 
-결제 직후 주문 생성이 `duplicate key value violates unique constraint "orders_order_code_key"` 로 실패하던 문제. **⚠️ 아직 미적용 — Supabase SQL Editor 에서 실행 필요.**
+결제 직후 주문 생성이 `duplicate key value violates unique constraint "orders_order_code_key"` 로 실패하던 문제. **적용 완료(운영 DB 반영·검증됨 — `next_order_code` 존재, `order_code_seq`=1026 으로 데이터 최대값과 정합).**
 
 - **[원인] 시드의 명시 삽입이 시퀀스를 진행시키지 않는다.** `orders.order_code` 기본값은 `'FP-' || nextval('order_code_seq')`(init:182)이고 시퀀스는 1000 부터인데, `seed_dev.sql:85~` 가 `FP-1018`~`FP-1024` 7건을 **order_code 명시값으로** 넣는다. 명시 삽입은 시퀀스를 건드리지 않으므로 실주문이 18건째에 도달하는 순간 **7건 연속 unique 위반** → `create_order` 롤백 → 앱이 결제를 취소한다. `nextval` 은 롤백돼도 되돌아가지 않아 재시도마다 번호가 하나씩 올라가고 `FP-1025` 에 닿으면 다시 성공하므로, 사용자에게는 "같은 상품을 한 번 더 주문할 때만 실패" 처럼 **간헐적 증상**으로 보인다.
 - **같은 구조가 두 곳 더 있었다**: 시드 `ST-001`~`003`(정산 생성 배치가 첫 3건에서 통째로 실패), `NC-001`~`003`(공지 작성 실패).
 - **수정 1 — 시퀀스 보정**: `order_code_seq`/`settlement_code_seq`/`notice_code_seq` 를 기존 데이터의 최대 번호 위로 `setval`. 코드에서 숫자만 뽑아 비교하되 **`max()` 전에 `::bigint` 캐스팅**한다(text 로 비교하면 `'999' > '1024'` 가 되어 보정이 빗나간다).
 - **수정 2 — 발번 스킵 함수**: `next_order_code()` / `next_settlement_code()` 를 기본값으로 걸어, 이미 존재하는 코드는 건너뛰고 다음 번호를 받게 했다. 시드를 다시 넣거나 코드를 수동 삽입해 시퀀스가 또 어긋나도 결제·정산 배치가 실패하지 않는다. security definer 인 이유는 시퀀스 usage 가 `authenticated` 에서 회수돼 있고(init:506) 기본값 표현식은 INSERT 하는 롤 권한으로 평가되기 때문이다. 무한 루프 방지로 1000회 초과 시 예외.
 - **수정 3 — `notices.notice_code` 의 `lpad(...,3)` 절단 제거**: 20260818010000 이 `settlement_code` 에서 고친 것과 같은 결함(1000번째에서 `NC-100` 충돌). `fmt_seq_code()` 로 교체 — 그 마이그레이션에 남겨둔 ⚠️ 항목을 여기서 닫는다.
+
+## 후속 마이그레이션 20260820010000_buyer_env_stats (2026-08-20)
+
+소비자앱 마이페이지 '환경 기여 통계' 실데이터화. **적용 완료(운영 DB 반영·검증됨).**
+
+- 3개 타일(구한 음식 12개 / 예상 절감 38,000원 / 폐기 감소 4.2kg)이 `MyPageScreen.js` 의 하드코딩 상수(`ENV_STATS` + "TODO: GET /api/users/me/stats")였다. 어느 계정으로 로그인해도 같은 숫자가 떴다.
+- **`my_env_stats()` RPC 추가**: 본인 주문을 집계해 `saved_count`(수량 합)·`saved_amount`(절감액 누적)를 돌려준다.
+  - 절감액 = `Σ(products.original_price × quantity − orders.amount)`. 정가는 주문에 스냅샷이 없어 `products` 를 조인해 읽고, 상품이 삭제돼 조인이 비면 `total_price`(=판매가×수량)로 폴백한다(그 주문은 쿠폰 할인분만 잡힌다 — 과대계상 방지). 음수는 0 으로 자른다.
+  - 집계 대상은 **취소·환불되지 않은 주문 전부**. 픽업완료만 세면 결제 직후 계속 0 이라 "값이 안 들어온다" 는 인상을 준다.
+  - **security definer 인 이유**: `products` 는 판매자/관리자 기준 RLS 라서 구매자 세션으로는 조인이 비어 정가를 못 읽는다(= 앱에서 계산 불가). `auth.uid()` 로 본인 주문만 집계하며, `anon` 은 명시 회수했다.
+- **'폐기 감소(kg)' 타일 제거**: 산출 기준이 없는 임의 수치였다(요청사항).
+- 검증: `mrpass88@naver.com` 계정 기준 7개 / 3,700원 — 기존 하드코딩(12개 / 38,000원)과 무관한 실제 값.

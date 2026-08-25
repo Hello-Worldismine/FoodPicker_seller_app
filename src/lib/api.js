@@ -300,18 +300,41 @@ export async function fetchOrders() {
   if (error) throw error;
   return (data || []).map(mapOrder);
 }
+// ★ 아래 세 조회도 fetchOrders 와 같은 이유로 seller_id 필터가 필수다.
+//   settlements 와 reviews 에는 본인 행 정책 외에 **관리자 정책**이 하나 더 걸려 있고
+//   (settlements_admin_select / reviews_admin_select, using: is_admin()), 정책은 OR 로 합쳐진다.
+//   그래서 admin_profiles 에 등록된 계정이 판매자앱에 로그인하면 필터 없는 조회가
+//   **다른 판매자의 정산·리뷰까지 통째로** 내려받는다.
+//   (판매자 겸 관리자 계정의 정산 화면에 남의 매장 주문이 뜬 실제 사례가 있었다.
+//    reviews 는 reviews_buyer_read 때문에 '내가 구매자로 쓴 리뷰' 도 섞인다 — orders 와 같은 함정)
+//   notifications 는 현재 관리자 정책이 없지만, 나중에 추가돼도 새지 않도록 같이 막아 둔다.
 export async function fetchReviews() {
-  const { data, error } = await supabase.from('reviews').select('*').order('created_at', { ascending: false });
+  const uid = await currentUid();
+  if (!uid) return [];
+  const { data, error } = await supabase
+    .from('reviews').select('*')
+    .eq('seller_id', uid)
+    .order('created_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapReview);
 }
 export async function fetchSettlements() {
-  const { data, error } = await supabase.from('settlements').select('*').order('settled_on', { ascending: false });
+  const uid = await currentUid();
+  if (!uid) return [];
+  const { data, error } = await supabase
+    .from('settlements').select('*')
+    .eq('seller_id', uid)
+    .order('settled_on', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapSettlement);
 }
 export async function fetchNotifications() {
-  const { data, error } = await supabase.from('notifications').select('*').order('created_at', { ascending: false });
+  const uid = await currentUid();
+  if (!uid) return [];
+  const { data, error } = await supabase
+    .from('notifications').select('*')
+    .eq('seller_id', uid)
+    .order('created_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(mapNotification);
 }
